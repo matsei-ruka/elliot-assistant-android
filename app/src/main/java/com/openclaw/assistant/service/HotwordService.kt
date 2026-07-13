@@ -588,12 +588,12 @@ class HotwordService : Service(), VoskRecognitionListener {
                 }
 
                 detectedTarget?.let { target ->
-                    Log.e(TAG, "Hotword detected! Text: $text")
-                    debugLog("DETECTED: \"$text\" -> ${target.target} conf=${"%.2f".format(maxConfidence)}")
+                    Log.i(TAG, "Hotword detected")
+                    debugLog("DETECTED: target=${target.target} conf=${"%.2f".format(maxConfidence)}")
                     onHotwordDetected(target)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to parse Vosk result: $it", e)
+                Log.w(TAG, "Failed to parse Vosk result class=${e.javaClass.simpleName}")
             }
             Unit
         }
@@ -604,7 +604,7 @@ class HotwordService : Service(), VoskRecognitionListener {
     }
 
     override fun onError(exception: Exception?) {
-        Log.e(TAG, "Vosk Error: " + exception?.message)
+        Log.e(TAG, "Vosk error class=${exception?.javaClass?.simpleName ?: "unknown"}")
         debugLog("Vosk error: ${exception?.message} — recovering in 3s")
         if (isSessionActive) return
         errorRecoveryJob?.cancel()

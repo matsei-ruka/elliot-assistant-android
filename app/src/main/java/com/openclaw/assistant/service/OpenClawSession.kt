@@ -42,6 +42,7 @@ import com.openclaw.assistant.R
 import com.openclaw.assistant.OpenClawApplication
 import com.openclaw.assistant.backend.BackendType
 import com.openclaw.assistant.backend.VoiceSessionRouter
+import com.openclaw.assistant.api.OpenClawVoiceResponse
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.speech.SpeechRecognizerManager
 import com.openclaw.assistant.speech.TTSManager
@@ -59,6 +60,15 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import com.openclaw.assistant.ui.theme.OpenClawAssistantTheme
+import com.openclaw.assistant.voice.CtbPlaybackResult
+import com.openclaw.assistant.voice.CtbVoiceFileStore
+import com.openclaw.assistant.voice.CtbVoiceLimits
+import com.openclaw.assistant.voice.CtbVoicePlayer
+import com.openclaw.assistant.voice.CtbVoiceRecorder
+import com.openclaw.assistant.voice.CtbVoiceTurnStateMachine
+import com.openclaw.assistant.voice.LocalSilenceDetector
+import java.io.File
+import kotlin.math.log10
 
 /**
  * Voice Interaction Session
@@ -82,6 +92,13 @@ class OpenClawSession(
     private var sessionArgs: Bundle? = initialSessionArgs
     private lateinit var speechManager: SpeechRecognizerManager
     private lateinit var ttsManager: TTSManager
+    private lateinit var ctbVoiceFiles: CtbVoiceFileStore
+    private lateinit var ctbVoiceRecorder: CtbVoiceRecorder
+    private lateinit var ctbVoicePlayer: CtbVoicePlayer
+    private val ctbVoiceState = CtbVoiceTurnStateMachine()
+    private var ctbRecordingStop: CompletableDeferred<Unit>? = null
+    private var ctbInputFile: File? = null
+    private var ctbOutputFile: File? = null
     
     // Repository
     private val chatRepository = com.openclaw.assistant.data.repository.ChatRepository.getInstance(context)
@@ -96,7 +113,9 @@ class OpenClawSession(
             if (intent?.action != "com.openclaw.assistant.ACTION_INTERRUPT_TTS") return
             // THINKING included so barge-in can also cancel the request
             // during the full 320-second CTB wait.
-            if (currentState.value != AssistantState.SPEAKING &&
+            if (currentState.value != AssistantState.LISTENING &&
+                currentState.value != AssistantState.PROCESSING &&
+                currentState.value != AssistantState.SPEAKING &&
                 currentState.value != AssistantState.PREPARING_SPEECH &&
                 currentState.value != AssistantState.THINKING) return
             Log.d(TAG, "Barge-in interrupt received in OpenClawSession")
@@ -158,10 +177,13 @@ class OpenClawSession(
              Log.w(TAG, "Lifecycle ON_CREATE failed", e)
         }
 
-        speechManager = SpeechRecognizerManager(context)
         ttsManager = TTSManager(context)
+        ctbVoiceFiles = CtbVoiceFileStore(context)
+        ctbVoiceFiles.deleteAll()
+        ctbVoiceRecorder = CtbVoiceRecorder(context, ctbVoiceFiles)
+        ctbVoicePlayer = CtbVoicePlayer(context)
         val initialized = ttsManager.initializeCurrentProvider()
-        Log.e(TAG, "Session TTS: initialized=$initialized ready=${ttsManager.isReady()} error=${ttsManager.getErrorMessage()}")
+        Log.i(TAG, "Session TTS initialized=$initialized ready=${ttsManager.isReady()}")
         androidx.core.content.ContextCompat.registerReceiver(
             context,
             interruptReceiver,
@@ -219,12 +241,14 @@ class OpenClawSession(
                     partialText = partialText.value,
                     errorMessage = errorMessage.value,
                     audioLevel = audioLevel.value,
+                    isRawVoice = resolvedRoute?.type == BackendType.OPENCLAW_HTTP,
                     onClose = {
                         isUserDismissed = true
                         finish()
                     },
                     onRetry = { startListening() },
-                    onInterrupt = { interruptAndListen() }
+                    onInterrupt = { interruptAndListen() },
+                    onStopRecording = { stopCtbRecordingAndSend() },
                 )
             }
         }
@@ -240,7 +264,8 @@ class OpenClawSession(
             scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
         }
 
-        // Ensure any existing SpeechRecognizerManager is cleaned up before creating a new one
+        // A CTB voice turn must never create or invoke SpeechRecognizer. Text
+        // routes initialize it only after routing has selected Gateway/Hermes.
         if (this::speechManager.isInitialized) {
             try {
                 speechManager.destroy()
@@ -248,7 +273,6 @@ class OpenClawSession(
                 Log.w(TAG, "Failed to destroy existing SpeechRecognizerManager before recreation", e)
             }
         }
-        speechManager = SpeechRecognizerManager(context)
 
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_RESUME)
@@ -285,6 +309,10 @@ class OpenClawSession(
             }
         }
 
+        if (route is VoiceSessionRouter.Route.Backend && route.type != BackendType.OPENCLAW_HTTP) {
+            speechManager = SpeechRecognizerManager(context)
+        }
+
         // SESSION MANAGEMENT
         if (isGatewayRoute()) {
             // Gateway route: manage session on the gateway side, not in local DB
@@ -303,10 +331,10 @@ class OpenClawSession(
                     val latestSession = if (settings.resumeLatestSession) chatRepository.getLatestSession() else null
                     if (latestSession != null) {
                         currentSessionId = latestSession.id
-                        Log.d(TAG, "Resuming latest session: $currentSessionId")
+                        Log.d(TAG, "Resuming latest session")
                     } else {
                         currentSessionId = chatRepository.createSession(title = String.format(context.getString(R.string.default_session_title_format), java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())))
-                        Log.d(TAG, "Created new session: $currentSessionId")
+                        Log.d(TAG, "Created new session")
                     }
 
                     // Store this ID in settings so ChatActivity and API calls use it
@@ -370,15 +398,41 @@ class OpenClawSession(
      * hotword service. Not used during barge-in, where the session goes
      * straight back to listening and must keep its foreground service.
      */
+    private val terminalCleanupRunning = AtomicBoolean(false)
+
     private fun releaseSessionResources(resumeHotword: Boolean = true) {
-        cancelInitialFillerPhrase()
-        cancelWaitPhraseTimer()
-        stopThinkingSound()
-        stopAuxiliarySpeech()
-        abandonAudioFocus()
-        releaseWakeLock()
-        SessionForegroundService.stop(context)
-        if (resumeHotword) sendResumeBroadcast()
+        if (!terminalCleanupRunning.compareAndSet(false, true)) return
+        try {
+            listeningJob?.cancel()
+            listeningJob = null
+            speakingJob?.cancel()
+            speakingJob = null
+            cancelSendJob()
+            ctbRecordingStop?.cancel()
+            ctbRecordingStop = null
+            ctbVoiceState.cancel()
+            runCatching { if (this::ctbVoiceRecorder.isInitialized) ctbVoiceRecorder.cancel() }
+            runCatching { if (this::ctbVoicePlayer.isInitialized) ctbVoicePlayer.stop() }
+            cancelInitialFillerPhrase()
+            cancelWaitPhraseTimer()
+            stopThinkingSound()
+            runCatching { stopAuxiliarySpeech() }
+            runCatching { if (this::ttsManager.isInitialized) ttsManager.stop() }
+            runCatching { if (this::speechManager.isInitialized) speechManager.destroy() }
+            runCatching { abandonAudioFocus() }
+            runCatching { releaseWakeLock() }
+            runCatching { SessionForegroundService.stop(context) }
+            if (this::ctbVoiceFiles.isInitialized) {
+                runCatching { ctbVoiceFiles.delete(ctbInputFile) }
+                runCatching { ctbVoiceFiles.delete(ctbOutputFile) }
+                runCatching { ctbVoiceFiles.deleteAll() }
+            }
+            ctbInputFile = null
+            ctbOutputFile = null
+            if (resumeHotword) runCatching { sendResumeBroadcast() }
+        } finally {
+            terminalCleanupRunning.set(false)
+        }
     }
 
     /**
@@ -399,18 +453,13 @@ class OpenClawSession(
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_PAUSE)
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_STOP)
 
-        // Abort the in-flight HTTP request before tearing anything down.
-        cancelSendJob()
         releaseSessionResources()
         scope.cancel()
-        speechManager.destroy()
-        ttsManager.stop()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_DESTROY)
-        cancelSendJob()
         releaseSessionResources()
         scope.cancel()
         try {
@@ -418,7 +467,7 @@ class OpenClawSession(
         } catch (_: Exception) {
         }
 
-        ttsManager.shutdown()
+        if (this::ttsManager.isInitialized) ttsManager.shutdown()
         toneGeneratorReleased.set(true)
         toneGenerator.release()
     }
@@ -444,7 +493,16 @@ class OpenClawSession(
     private var isUserDismissed = false
 
     private fun startListening(initialDelayMs: Long = 50L) {
+        if (resolvedRoute?.type == BackendType.OPENCLAW_HTTP) {
+            startCtbVoiceTurn(initialDelayMs)
+        } else {
+            startTextListening(initialDelayMs)
+        }
+    }
+
+    private fun startTextListening(initialDelayMs: Long = 50L) {
         Log.d(TAG, "startListening() called, currentState=${currentState.value}, listeningJob=${listeningJob}, speakingJob=${speakingJob}")
+        if (!this::speechManager.isInitialized) speechManager = SpeechRecognizerManager(context)
         listeningJob?.cancel()
         // Re-arm the session resources: a retry after a terminal error must
         // restore the foreground service and wake lock it released.
@@ -518,7 +576,7 @@ class OpenClawSession(
                                 }
                             }
                             is SpeechResult.Result -> {
-                                Log.d(TAG, "SpeechResult.Result received: text='${result.text}'")
+                                Log.d(TAG, "SpeechResult.Result received length=${result.text.length}")
                                 hasActuallySpoken = true
                                 userQuery.value = result.text
                                 sendToOpenClaw(result.text)
@@ -545,12 +603,13 @@ class OpenClawSession(
                                         hasActuallySpoken = true // break the loop but don't finish
                                     } else {
                                         playTone(android.media.ToneGenerator.TONE_PROP_NACK, 100)
+                                        currentState.value = AssistantState.IDLE
+                                        releaseSessionResources()
                                         finish() // Close the session
                                     }
                                 } else {
                                     playTone(android.media.ToneGenerator.TONE_PROP_NACK, 100)
-                                    currentState.value = AssistantState.ERROR
-                                    errorMessage.value = result.message
+                                    failRequest(result.message)
                                     hasActuallySpoken = true
                                 }
                             }
@@ -567,6 +626,8 @@ class OpenClawSession(
                         Log.d(TAG, "Manual timeout but AI is $state, not closing session")
                         hasActuallySpoken = true // break the loop but don't finish
                     } else {
+                        currentState.value = AssistantState.IDLE
+                        releaseSessionResources()
                         finish() // Close the session
                         hasActuallySpoken = true
                     }
@@ -576,6 +637,212 @@ class OpenClawSession(
                     delay(300)
                 }
             }
+        }
+    }
+
+    /** Direct CTB microphone -> OGG/Opus -> inline audio turn; no STT. */
+    private fun startCtbVoiceTurn(initialDelayMs: Long) {
+        val route = resolvedRoute?.takeIf { it.type == BackendType.OPENCLAW_HTTP }
+        if (route == null) {
+            failRequest(context.getString(R.string.error_config_required))
+            return
+        }
+
+        val previous = cancelSendJob()
+        ctbVoiceState.cancel()
+        ctbRecordingStop?.cancel()
+        ctbRecordingStop = null
+        ctbVoiceRecorder.cancel()
+        ctbVoicePlayer.stop()
+        ctbVoiceFiles.delete(ctbInputFile)
+        ctbVoiceFiles.delete(ctbOutputFile)
+        ctbInputFile = null
+        ctbOutputFile = null
+
+        SessionForegroundService.start(context)
+        acquireWakeLock()
+        sendPauseBroadcast()
+        currentState.value = AssistantState.PROCESSING
+        displayText.value = ""
+        userQuery.value = ""
+        partialText.value = ""
+        errorMessage.value = null
+        audioLevel.value = 0f
+
+        lateinit var turnJob: Job
+        turnJob = scope.launch {
+            previous?.join()
+            val owner = ctbVoiceState.begin()
+            try {
+                delay(initialDelayMs)
+                requestCaptureAudioFocus()
+                playTone(android.media.ToneGenerator.TONE_PROP_BEEP, 100)
+                delay(180L)
+
+                val stopSignal = CompletableDeferred<Unit>()
+                ctbRecordingStop = stopSignal
+                val input = ctbVoiceRecorder.start { stopSignal.complete(Unit) }
+                ctbInputFile = input
+                val detector = LocalSilenceDetector()
+                val startedAt = System.currentTimeMillis()
+                currentState.value = AssistantState.LISTENING
+
+                while (isActive && !stopSignal.isCompleted) {
+                    delay(100L)
+                    val amplitude = ctbVoiceRecorder.maxAmplitude()
+                    audioLevel.value = amplitudeToUiLevel(amplitude)
+                    val elapsed = System.currentTimeMillis() - startedAt
+                    if (detector.observe(amplitude, elapsed) ||
+                        elapsed >= CtbVoiceLimits.MAX_CAPTURE_DURATION_MS
+                    ) {
+                        stopSignal.complete(Unit)
+                    }
+                }
+                stopSignal.await()
+                ctbRecordingStop = null
+                coroutineContext.ensureActive()
+                if (!ctbVoiceState.transition(owner, CtbVoiceTurnStateMachine.State.WAITING_FOR_REPLY)) {
+                    return@launch
+                }
+
+                currentState.value = AssistantState.PROCESSING
+                audioLevel.value = 0f
+                abandonAudioFocus()
+                val finalizedInput = ctbVoiceRecorder.stopAndValidate()
+                ctbInputFile = finalizedInput
+                currentState.value = AssistantState.THINKING
+                playTone(android.media.ToneGenerator.TONE_PROP_ACK, 150)
+                startThinkingSound()
+                if (settings.fillerPhrasesEnabled) scheduleInitialFillerPhrase()
+                startWaitPhraseTimer()
+
+                val output = ctbVoiceFiles.newOutputFile()
+                ctbOutputFile = output
+                val response = com.openclaw.assistant.backend.PrimaryBackendDispatcher.sendCtbVoice(
+                    context = context,
+                    inputFile = finalizedInput,
+                    outputFile = output,
+                    backendId = route.id,
+                    sessionId = settings.installUserId,
+                )
+                ctbInputFile = null // OpenClawClient deletes it immediately after serialization.
+                coroutineContext.ensureActive()
+                if (!ctbVoiceState.isCurrent(owner)) return@launch
+                cancelInitialFillerPhrase()
+                cancelWaitPhraseTimer()
+                stopAuxiliarySpeech()
+
+                when (response) {
+                    is OpenClawVoiceResponse.Audio -> handleRemoteVoiceReply(owner, response, turnJob)
+                    is OpenClawVoiceResponse.Text -> handleCtbTextFallback(owner, response.content)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (ctbVoiceState.isCurrent(owner)) failRequest(e.message)
+            } finally {
+                ctbRecordingStop = null
+                ctbVoiceRecorder.cancel()
+                ctbVoiceFiles.delete(ctbInputFile)
+                ctbInputFile = null
+                if (sendJob !== turnJob || !ctbVoiceState.isCurrent(owner)) {
+                    ctbVoiceFiles.delete(ctbOutputFile)
+                    ctbOutputFile = null
+                }
+            }
+        }
+        sendJob = turnJob
+        turnJob.invokeOnCompletion {
+            if (sendJob === turnJob) sendJob = null
+        }
+    }
+
+    private suspend fun handleRemoteVoiceReply(
+        owner: Long,
+        response: OpenClawVoiceResponse.Audio,
+        turnJob: Job,
+    ) {
+        ctbOutputFile = response.file
+        if (!ctbVoiceState.transition(owner, CtbVoiceTurnStateMachine.State.PREPARING_PLAYBACK)) {
+            ctbVoiceFiles.delete(response.file)
+            return
+        }
+        displayText.value = response.transcript.orEmpty()
+        currentState.value = AssistantState.PREPARING_SPEECH
+        stopThinkingSound()
+        when (val playback = ctbVoicePlayer.play(response.file) {
+            if (ctbVoiceState.transition(owner, CtbVoiceTurnStateMachine.State.PLAYING_REMOTE_AUDIO)) {
+                currentState.value = AssistantState.SPEAKING
+            }
+        }) {
+            CtbPlaybackResult.Completed -> {
+                ctbVoiceState.transition(owner, CtbVoiceTurnStateMachine.State.IDLE)
+                ctbVoiceFiles.delete(response.file)
+                ctbOutputFile = null
+                currentState.value = AssistantState.IDLE
+                if (settings.continuousMode) {
+                    if (sendJob === turnJob) sendJob = null
+                    delay(500L)
+                    startListening()
+                } else {
+                    releaseSessionResources()
+                }
+            }
+            CtbPlaybackResult.Interrupted -> {
+                ctbVoiceState.transition(owner, CtbVoiceTurnStateMachine.State.IDLE)
+                currentState.value = AssistantState.IDLE
+                releaseSessionResources()
+            }
+            is CtbPlaybackResult.Failed -> failRequest(playback.reason)
+        }
+    }
+
+    private fun handleCtbTextFallback(owner: Long, text: String) {
+        if (!ctbVoiceState.transition(owner, CtbVoiceTurnStateMachine.State.PREPARING_LOCAL_TTS)) return
+        ctbVoiceFiles.delete(ctbOutputFile)
+        ctbOutputFile = null
+        displayText.value = text
+        // CTB promised voice; a degraded text completion is spoken exactly once
+        // through the established local fallback, irrespective of primary audio.
+        speakResponse(
+            text = text,
+            onStarted = {
+                ctbVoiceState.transition(owner, CtbVoiceTurnStateMachine.State.PLAYING_LOCAL_TTS)
+            },
+            onCompleted = {
+                ctbVoiceState.transition(owner, CtbVoiceTurnStateMachine.State.IDLE)
+            },
+        )
+    }
+
+    private fun stopCtbRecordingAndSend() {
+        if (resolvedRoute?.type == BackendType.OPENCLAW_HTTP && ctbVoiceRecorder.isRecording()) {
+            ctbRecordingStop?.complete(Unit)
+        }
+    }
+
+    private fun amplitudeToUiLevel(amplitude: Int): Float {
+        if (amplitude <= 0) return -2f
+        return (20f * log10(amplitude.toFloat() / 32_767f) + 10f).coerceIn(-2f, 10f)
+    }
+
+    private fun requestCaptureAudioFocus() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        audioFocusRequest = android.media.AudioFocusRequest.Builder(
+            android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+        ).setOnAudioFocusChangeListener { change ->
+            if ((change == android.media.AudioManager.AUDIOFOCUS_LOSS ||
+                    change == android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) &&
+                ctbVoiceRecorder.isRecording()
+            ) {
+                currentState.value = AssistantState.IDLE
+                releaseSessionResources()
+            }
+        }.build()
+        val granted = audioManager.requestAudioFocus(audioFocusRequest!!)
+        if (granted != android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            audioFocusRequest = null
+            throw IllegalStateException("Microphone audio focus was denied")
         }
     }
 
@@ -604,9 +871,9 @@ class OpenClawSession(
      * released; the overlay stays up showing the error (Spec 001 §D).
      */
     private fun failRequest(message: String?) {
-        releaseSessionResources()
         currentState.value = AssistantState.ERROR
         errorMessage.value = message ?: context.getString(R.string.error_network)
+        releaseSessionResources()
     }
 
     private fun sendToOpenClaw(message: String) {
@@ -858,6 +1125,15 @@ class OpenClawSession(
         stopThinkingSound()
         stopAuxiliarySpeech()
         listeningJob?.cancel()
+        ctbVoiceState.cancel()
+        ctbRecordingStop?.cancel()
+        ctbRecordingStop = null
+        ctbVoiceRecorder.cancel()
+        ctbVoicePlayer.stop()
+        ctbVoiceFiles.delete(ctbInputFile)
+        ctbVoiceFiles.delete(ctbOutputFile)
+        ctbInputFile = null
+        ctbOutputFile = null
         // Abort the in-flight HTTP request so a late reply is never spoken
         // and the OkHttp call is really cancelled (Spec 001 §B.2/§D).
         val cancelledSend = cancelSendJob()
@@ -866,7 +1142,7 @@ class OpenClawSession(
         ttsManager.stop()
         speakingJob?.cancel()
         speakingJob = null
-        speechManager.destroy()
+        if (this::speechManager.isInitialized) speechManager.destroy()
         abandonAudioFocus()
         currentState.value = AssistantState.PROCESSING
         partialText.value = ""
@@ -880,7 +1156,11 @@ class OpenClawSession(
         }
     }
 
-    private fun speakResponse(text: String) {
+    private fun speakResponse(
+        text: String,
+        onStarted: (() -> Unit)? = null,
+        onCompleted: (() -> Unit)? = null,
+    ) {
         Log.d(TAG, "speakResponse() called, text length=${text.length}")
         // Thinking sound continues until TTSState.Speaking is received
         currentState.value = AssistantState.PREPARING_SPEECH
@@ -904,6 +1184,7 @@ class OpenClawSession(
                                 Log.d(TAG, "TTS Speaking")
                                 stopThinkingSound()
                                 currentState.value = AssistantState.SPEAKING
+                                onStarted?.invoke()
                                 // Barge-inが有効な場合、読み上げ開始時にHotwordServiceを再開する
                                 if (settings.ttsBargeInEnabled) {
                                     sendResumeBroadcast()
@@ -918,7 +1199,7 @@ class OpenClawSession(
                                     Log.d(TAG, "Ignoring TTS stop during controlled interruption")
                                     return@collect
                                 }
-                                Log.e(TAG, "TTS Error: ${state.message}")
+                                Log.e(TAG, "TTS error")
                                 chunkSuccess = false
                             }
                         }
@@ -945,6 +1226,7 @@ class OpenClawSession(
                 }
 
                 if (success) {
+                    onCompleted?.invoke()
                     // After speech completion, if continuous conversation mode is enabled, start listening again
                     if (settings.continuousMode) {
                         Log.d(TAG, "TTS complete, continuous mode ON. Starting 2nd rally startListening() in 500ms")
@@ -952,8 +1234,8 @@ class OpenClawSession(
                         startListening()
                     } else {
                         // Continuous conversation OFF: terminal success
-                        releaseSessionResources()
                         currentState.value = AssistantState.IDLE
+                        releaseSessionResources()
                     }
                 } else {
                     failRequest(context.getString(R.string.error_speech_general))
@@ -1041,9 +1323,11 @@ fun AssistantUI(
     partialText: String,
     errorMessage: String?,
     audioLevel: Float,
+    isRawVoice: Boolean = false,
     onClose: () -> Unit,
     onRetry: () -> Unit,
-    onInterrupt: () -> Unit = {}
+    onInterrupt: () -> Unit = {},
+    onStopRecording: () -> Unit = {},
 ) {
     Box(
         modifier = Modifier
@@ -1117,16 +1401,25 @@ fun AssistantUI(
                 modifier = Modifier
                     .size(140.dp)
                     .then(
-                        if (state == AssistantState.SPEAKING ||
+                        if ((state == AssistantState.LISTENING && isRawVoice) ||
+                            state == AssistantState.PROCESSING ||
+                            state == AssistantState.SPEAKING ||
                             state == AssistantState.PREPARING_SPEECH ||
                             state == AssistantState.THINKING
                         ) {
-                            // THINKING included so the user can cancel the
-                            // request during the full 320-second CTB wait.
                             Modifier.clickable(
-                                onClickLabel = stringResource(R.string.interrupt_description),
+                                onClickLabel = stringResource(
+                                    if (state == AssistantState.LISTENING) {
+                                        R.string.stop_recording_description
+                                    } else {
+                                        R.string.interrupt_description
+                                    }
+                                ),
                                 role = Role.Button
-                            ) { onInterrupt() }
+                            ) {
+                                if (state == AssistantState.LISTENING) onStopRecording()
+                                else onInterrupt()
+                            }
                         } else Modifier
                     ),
                 contentAlignment = Alignment.Center,
@@ -1169,6 +1462,15 @@ fun AssistantUI(
                     fontSize = 16.sp,
                     color = Color.Gray,
                     textAlign = TextAlign.Center
+                )
+            }
+
+            if (state == AssistantState.LISTENING && isRawVoice) {
+                Text(
+                    text = stringResource(R.string.stop_recording_hint),
+                    fontSize = 13.sp,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center,
                 )
             }
 

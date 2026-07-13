@@ -19,6 +19,8 @@
     <!-- Foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Remote CTB OGG/Opus replies continue with the screen off. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Keep CPU running even when screen is OFF -->
@@ -48,6 +50,13 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.OpenClawAssistant"
         tools:targetApi="34">
+
+        <!-- CameraX remains compile-time source material for the inherited
+             fail-closed handlers, but contributes no component to this APK. -->
+        <service
+            android:name="androidx.camera.core.impl.MetadataHolderService"
+            tools:ignore="Instantiatable"
+            tools:node="remove" />
 
         <!-- Main Activity -->
         <activity
@@ -95,26 +104,8 @@
              BridgePairingActivity and SelfCheckActivity are not declared in
              the CTB build: they only served the removed mobile-bridge and
              device-capability surfaces. -->
-        <activity
-            android:name="com.openclaw.assistant.ui.setup.AgentVoiceSetupActivity"
-            android:exported="false"
-            android:theme="@style/Theme.OpenClawAssistant" />
-        <!-- Deep-link target for WakeHermesClaw pairing QR codes. Any QR scanner on the
-             phone (including the stock camera app on modern Android) routes
-             agentvoice://setup?... or agentvoice://hermes/setup?... here. -->
-        <activity
-            android:name="com.openclaw.assistant.ui.setup.HermesImportActivity"
-            android:exported="true"
-            android:launchMode="singleTask"
-            android:theme="@style/Theme.OpenClawAssistant">
-            <intent-filter android:autoVerify="false">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="agentvoice" android:host="setup" />
-                <data android:scheme="agentvoice" android:host="hermes" />
-            </intent-filter>
-        </activity>
+        <!-- Legacy AgentVoice setup/deep-link activities are intentionally not
+             declared. BackendRepository onboarding/editor flows are authoritative. -->
 
         <!-- Voice Interaction Service (Home button long press) -->
         <service
@@ -149,7 +140,7 @@
         <service
             android:name="com.openclaw.assistant.service.SessionForegroundService"
             android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="microphone|mediaPlayback" />
 
         <!-- Hotword Detection Service (Ambient Listening) -->
         <service

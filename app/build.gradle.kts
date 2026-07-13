@@ -47,7 +47,9 @@ android {
 
     defaultConfig {
         applicationId = "com.openclaw.assistant"
-        minSdk = 26
+        // Android 10 is the first robust platform OGG/Opus MediaRecorder path.
+        // The CTB voice fork deliberately avoids a brittle custom Android 8/9 codec.
+        minSdk = 29
         targetSdk = 34
         versionCode = getTagVersionCode()
         versionName = getTagName()
@@ -262,8 +264,6 @@ dependencies {
     // a voice assistant must not export prompts, replies, endpoint details,
     // or device identifiers to a third-party telemetry provider.
 
-    // QR Code Scanning (Google Code Scanner — no camera permission required)
-    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }
 
 tasks.withType<Test>().configureEach {

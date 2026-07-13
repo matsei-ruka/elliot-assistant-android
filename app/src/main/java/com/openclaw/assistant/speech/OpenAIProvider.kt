@@ -61,7 +61,7 @@ class OpenAIProvider(private val context: Context) : TTSProvider {
                 tempFile.delete()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error speaking: ${e.message}", e)
+            Log.e(TAG, "Error speaking class=${e.javaClass.simpleName}")
             false
         }
     }
@@ -96,7 +96,7 @@ class OpenAIProvider(private val context: Context) : TTSProvider {
                 }
             }
         } catch (e: IOException) {
-            Log.e(TAG, "Network error: ${e.message}", e)
+            Log.e(TAG, "Network error class=${e.javaClass.simpleName}")
             null
         }
     }
@@ -121,7 +121,7 @@ class OpenAIProvider(private val context: Context) : TTSProvider {
                 prepareAsync()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error playing audio: ${e.message}", e)
+            Log.e(TAG, "Error playing audio class=${e.javaClass.simpleName}")
             continuation.resume(false)
         }
         
@@ -142,7 +142,7 @@ class OpenAIProvider(private val context: Context) : TTSProvider {
             mediaPlayer?.release()
             mediaPlayer = null
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping: ${e.message}")
+            Log.w(TAG, "Error stopping class=${e.javaClass.simpleName}")
         }
     }
     

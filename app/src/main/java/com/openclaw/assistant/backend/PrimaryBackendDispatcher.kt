@@ -2,10 +2,13 @@ package com.openclaw.assistant.backend
 
 import android.content.Context
 import com.openclaw.assistant.OpenClawApplication
+import com.openclaw.assistant.api.OpenClawClient
+import com.openclaw.assistant.api.OpenClawVoiceResponse
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
+import java.io.File
 
 /**
  * Single entry point used by voice (wake word, Voice Overlay, Assistant
@@ -60,6 +63,33 @@ object PrimaryBackendDispatcher {
         context: Context,
         userText: String,
     ): Reply? = sendPrimary(context, userText)
+
+    /**
+     * CTB-only raw voice dispatch. Resolution is against the authoritative
+     * BackendRepository and never consults OpenClaw Gateway health/session APIs.
+     */
+    suspend fun sendCtbVoice(
+        context: Context,
+        inputFile: File,
+        outputFile: File,
+        backendId: String,
+        sessionId: String,
+    ): OpenClawVoiceResponse {
+        val target = BackendManager.getInstance(context).backends.first()
+            .firstOrNull { it.id == backendId && it.enabled }
+            ?: throw IllegalStateException("Configured CTB backend is unavailable")
+        if (target.type != BackendType.OPENCLAW_HTTP) {
+            throw IllegalStateException("Raw voice transport requires the CTB HTTP backend")
+        }
+        return OpenClawClient().sendVoiceMessage(
+            httpUrl = target.baseUrl.orEmpty(),
+            inputFile = inputFile,
+            outputFile = outputFile,
+            sessionId = sessionId,
+            authToken = target.apiKeyOrToken?.takeIf { it.isNotBlank() },
+            modelName = target.modelName?.takeIf { it.isNotBlank() },
+        ).getOrElse { throw it }
+    }
 
     private suspend fun sendViaAgentClient(
         context: Context,

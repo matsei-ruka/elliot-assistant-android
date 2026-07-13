@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- No debug-only exported probe, preview or test-host surface in the
+         restricted CTB APK. The libraries remain available to local builds. -->
     <application>
         <activity
-            android:name="com.openclaw.assistant.debug.HermesLiveProbeActivity"
-            android:exported="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+            android:name="androidx.compose.ui.tooling.PreviewActivity"
+            tools:node="remove" />
+        <activity
+            android:name="androidx.activity.ComponentActivity"
+            tools:node="remove" />
     </application>
 </manifest>

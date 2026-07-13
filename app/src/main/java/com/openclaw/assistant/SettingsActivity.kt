@@ -46,6 +46,7 @@ import com.openclaw.assistant.backend.AgentDiagnostics
 import com.openclaw.assistant.backend.AgentDiagnosticSnapshot
 import com.openclaw.assistant.backend.BackendRepository
 import com.openclaw.assistant.backend.BackendType
+import com.openclaw.assistant.backend.WriteOnlyCredential
 
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.service.HotwordService
@@ -94,6 +95,34 @@ object ElevenLabsVoiceOptions {
         VoiceOption("N2lVS1w4EtoT3dr4eOWO", "Callum", "ハスキーなトリックスター"),
         VoiceOption("iP95p4xoKVk53GoZ742B", "Chris", "魅力的で親しみやすい男性")
     )
+}
+
+private fun saveCtbBackend(
+    repo: BackendRepository,
+    existing: AgentBackendConfig?,
+    endpoint: String,
+    newToken: String,
+    makePrimary: Boolean,
+): AgentBackendConfig {
+    val saved = (existing ?: AgentBackendConfig(
+        displayName = "Telegram Bridge",
+        type = BackendType.OPENCLAW_HTTP,
+    )).copy(
+        displayName = "Telegram Bridge",
+        type = BackendType.OPENCLAW_HTTP,
+        enabled = true,
+        isPrimary = makePrimary || existing?.isPrimary == true,
+        baseUrl = endpoint,
+        apiKeyOrToken = com.openclaw.assistant.backend.WriteOnlyCredential.resolve(
+            entry = newToken,
+            stored = existing?.apiKeyOrToken,
+        ),
+        modelName = existing?.modelName?.takeIf { it.isNotBlank() } ?: "telegram-agent",
+        useStreaming = false,
+    )
+    repo.upsert(saved)
+    if (makePrimary) repo.setPrimary(saved.id)
+    return saved
 }
 
 // VoiceVox Character Data
@@ -252,7 +281,6 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onCredits: () -> Unit = {}
 ) {
-    var httpUrl by rememberSaveable { mutableStateOf(settings.httpUrl) }
     var defaultAgentId by rememberSaveable { mutableStateOf(settings.defaultAgentId) }
     var ttsEnabled by rememberSaveable { mutableStateOf(settings.ttsEnabled) }
     var ttsSpeed by rememberSaveable { mutableStateOf(settings.ttsSpeed) }
@@ -306,13 +334,15 @@ fun SettingsScreen(
     var showTtsTypeMenu by rememberSaveable { mutableStateOf(false) }
     
     // ElevenLabs
-    var elevenLabsApiKey by remember { mutableStateOf(settings.elevenLabsApiKey) }
+    var elevenLabsApiKey by remember { mutableStateOf("") }
+    var clearElevenLabsApiKey by remember { mutableStateOf(false) }
     var elevenLabsVoiceId by rememberSaveable { mutableStateOf(settings.elevenLabsVoiceId) }
     var elevenLabsSpeed by rememberSaveable { mutableStateOf(settings.elevenLabsSpeed) }
     var showElevenLabsApiKey by rememberSaveable { mutableStateOf(false) }
     
     // OpenAI
-    var openAiApiKey by remember { mutableStateOf(settings.openAiApiKey) }
+    var openAiApiKey by remember { mutableStateOf("") }
+    var clearOpenAiApiKey by remember { mutableStateOf(false) }
     var openAiVoice by rememberSaveable { mutableStateOf(settings.openAiVoice) }
     var showOpenAiApiKey by rememberSaveable { mutableStateOf(false) }
     
@@ -330,6 +360,7 @@ fun SettingsScreen(
         BackendRepository.getInstance(context.applicationContext)
     }
     val configuredBackends by backendRepository.backends.collectAsState()
+    val ctbBackend = configuredBackends.firstOrNull { it.type == BackendType.OPENCLAW_HTTP }
 
     val manualEnabledState by runtime.manualEnabled.collectAsState()
     val manualHostState by runtime.manualHost.collectAsState()
@@ -344,14 +375,18 @@ fun SettingsScreen(
     var gatewayHost by rememberSaveable { mutableStateOf(manualHostState) }
     var gatewayPort by rememberSaveable { mutableStateOf(manualPortState.toString()) }
     var gatewayTls by rememberSaveable { mutableStateOf(manualTlsState) }
-    var gatewayToken by remember { mutableStateOf(gatewayTokenState) }
-    var gatewayPassword by remember { mutableStateOf(runtime.getGatewayPassword() ?: "") }
-    var gatewayBootstrapToken by remember { mutableStateOf(runtime.getGatewayBootstrapToken() ?: "") }
+    // Credentials are write-only in UI state. Blank preserves the secure
+    // stored value; a separate explicit action is required to clear it.
+    var gatewayToken by remember { mutableStateOf("") }
+    var clearGatewayToken by remember { mutableStateOf(false) }
+    var gatewayPassword by remember { mutableStateOf("") }
+    var clearGatewayPassword by remember { mutableStateOf(false) }
+    var gatewayBootstrapToken by remember { mutableStateOf("") }
     var showGatewayPassword by rememberSaveable { mutableStateOf(false) }
     var usePasswordAuth by rememberSaveable { mutableStateOf(runtime.getGatewayPassword()?.isNotEmpty() == true) }
 
     // Setup code (quick-config from `openclaw qr --setup-code-only`)
-    var setupCode by rememberSaveable { mutableStateOf("") }
+    var setupCode by remember { mutableStateOf("") }
     var setupCodeApplied by rememberSaveable { mutableStateOf(false) }
     var setupCodeError by rememberSaveable { mutableStateOf(false) }
     // True when the applied setup code had only bootstrapToken (no password/token in QR)
@@ -360,18 +395,19 @@ fun SettingsScreen(
     // HTTP inputs. The CTB token is never loaded back into the UI after
     // entry (Spec 001): the field starts blank and blank means "keep the
     // stored token".
-    var httpInputUrl by rememberSaveable { mutableStateOf(httpUrl) }
+    var httpInputUrl by rememberSaveable(ctbBackend?.id) {
+        mutableStateOf(ctbBackend?.baseUrl ?: "https://bridge.italia.ae/v1/chat/completions")
+    }
     var httpToken by remember { mutableStateOf("") }
 
     // Update local state if runtime state changes behind the scenes
-    LaunchedEffect(manualHostState, manualPortState, manualTlsState, gatewayTokenState) {
+    LaunchedEffect(manualHostState, manualPortState, manualTlsState) {
         gatewayHost = manualHostState
         gatewayPort = manualPortState.toString()
         gatewayTls = manualTlsState
-        gatewayToken = gatewayTokenState
     }
-    LaunchedEffect(httpUrl) {
-        httpInputUrl = httpUrl
+    LaunchedEffect(ctbBackend?.baseUrl) {
+        ctbBackend?.baseUrl?.let { httpInputUrl = it }
     }
 
     LaunchedEffect(Unit) {
@@ -461,27 +497,26 @@ fun SettingsScreen(
                                 runtime.setManualHost(gatewayHost.trim())
                                 runtime.setManualPort(gatewayPort.toIntOrNull() ?: 18789)
                                 runtime.setManualTls(gatewayTls)
-                                if (gatewayBootstrapToken.isNotBlank()) {
-                                    runtime.setGatewayBootstrapToken(gatewayBootstrapToken.trim())
-                                    if (usePasswordAuth && gatewayPassword.isNotBlank()) {
-                                        runtime.setGatewayToken("")
-                                        runtime.setGatewayPassword(gatewayPassword.trim())
-                                    } else if (!usePasswordAuth && gatewayToken.isNotBlank()) {
-                                        runtime.setGatewayToken(gatewayToken.trim())
-                                        runtime.setGatewayPassword("")
-                                    } else {
-                                        runtime.setGatewayToken("")
-                                        runtime.setGatewayPassword("")
-                                    }
-                                } else if (usePasswordAuth) {
-                                    runtime.setGatewayBootstrapToken("")
-                                    runtime.setGatewayToken("")
-                                    runtime.setGatewayPassword(gatewayPassword.trim())
-                                } else {
-                                    runtime.setGatewayBootstrapToken("")
-                                    runtime.setGatewayToken(gatewayToken.trim())
-                                    runtime.setGatewayPassword("")
-                                }
+                                runtime.setGatewayBootstrapToken(
+                                    WriteOnlyCredential.resolve(
+                                        entry = gatewayBootstrapToken,
+                                        stored = runtime.getGatewayBootstrapToken(),
+                                    ).orEmpty()
+                                )
+                                runtime.setGatewayToken(
+                                    WriteOnlyCredential.resolve(
+                                        entry = gatewayToken,
+                                        stored = gatewayTokenState,
+                                        clear = clearGatewayToken,
+                                    ).orEmpty()
+                                )
+                                runtime.setGatewayPassword(
+                                    WriteOnlyCredential.resolve(
+                                        entry = gatewayPassword,
+                                        stored = runtime.getGatewayPassword(),
+                                        clear = clearGatewayPassword,
+                                    ).orEmpty()
+                                )
 
                                 // Save HTTP Settings. The CTB endpoint is stored
                                 // exactly as entered: an HTTPS URL ending in
@@ -491,12 +526,15 @@ fun SettingsScreen(
                                     com.openclaw.assistant.api.CtbHttpConfig.validateEndpoint(httpInputUrl.trim()) == null
                                 ) {
                                     testResult = TestResult(success = false, message = context.getString(R.string.ctb_endpoint_invalid))
-                                } else {
-                                    settings.httpUrl = httpInputUrl.trim()
-                                }
-                                // Blank means "keep the stored token".
-                                if (httpToken.isNotBlank()) {
-                                    settings.authToken = httpToken.trim()
+                                } else if (httpInputUrl.isNotBlank()) {
+                                    val saved = saveCtbBackend(
+                                        repo = backendRepository,
+                                        existing = ctbBackend,
+                                        endpoint = httpInputUrl.trim(),
+                                        newToken = httpToken,
+                                        makePrimary = openClawTabIndex == 1,
+                                    )
+                                    if (saved.isPrimary) backendRepository.setPrimary(saved.id)
                                     httpToken = ""
                                 }
 
@@ -505,10 +543,18 @@ fun SettingsScreen(
                                 settings.ttsSpeed = ttsSpeed
                                 settings.ttsEngine = ttsEngine
                                 settings.ttsType = ttsType
-                                settings.elevenLabsApiKey = elevenLabsApiKey
+                                settings.elevenLabsApiKey = WriteOnlyCredential.resolve(
+                                    entry = elevenLabsApiKey,
+                                    stored = settings.elevenLabsApiKey,
+                                    clear = clearElevenLabsApiKey,
+                                ).orEmpty()
                                 settings.elevenLabsVoiceId = elevenLabsVoiceId
                                 settings.elevenLabsSpeed = elevenLabsSpeed
-                                settings.openAiApiKey = openAiApiKey
+                                settings.openAiApiKey = WriteOnlyCredential.resolve(
+                                    entry = openAiApiKey,
+                                    stored = settings.openAiApiKey,
+                                    clear = clearOpenAiApiKey,
+                                ).orEmpty()
                                 settings.openAiVoice = openAiVoice
                                 settings.voiceVoxStyleId = voiceVoxStyleId
                                 settings.voiceVoxTermsAccepted = voiceVoxTermsAccepted
@@ -528,6 +574,16 @@ fun SettingsScreen(
                                 settings.ttsBargeInEnabled = ttsBargeInEnabled
                                 settings.wakeWordDebugEnabled = wakeWordDebugEnabled
                                 settings.mediaButtonEnabled = mediaButtonEnabled
+                                setupCode = ""
+                                gatewayToken = ""
+                                gatewayPassword = ""
+                                gatewayBootstrapToken = ""
+                                elevenLabsApiKey = ""
+                                openAiApiKey = ""
+                                clearGatewayToken = false
+                                clearGatewayPassword = false
+                                clearElevenLabsApiKey = false
+                                clearOpenAiApiKey = false
                                 applyAppLanguage(appLanguage)
 
                                 // Stop/Restart services
@@ -686,10 +742,14 @@ fun SettingsScreen(
                                                             if (decoded.password != null) {
                                                                 gatewayToken = ""
                                                                 gatewayPassword = decoded.password
+                                                                clearGatewayToken = true
+                                                                clearGatewayPassword = false
                                                                 usePasswordAuth = true
                                                             } else {
                                                                 gatewayToken = decoded.token.orEmpty()
                                                                 gatewayPassword = ""
+                                                                clearGatewayToken = false
+                                                                clearGatewayPassword = decoded.token != null
                                                                 usePasswordAuth = false
                                                             }
                                                             setupCodeHasBootstrapOnly = decoded.password == null && decoded.token == null
@@ -697,11 +757,15 @@ fun SettingsScreen(
                                                             gatewayBootstrapToken = ""
                                                             usePasswordAuth = true
                                                             gatewayPassword = decoded.password
+                                                            clearGatewayToken = true
+                                                            clearGatewayPassword = false
                                                             setupCodeHasBootstrapOnly = false
                                                         } else if (decoded.token != null) {
                                                             gatewayBootstrapToken = ""
                                                             usePasswordAuth = false
                                                             gatewayToken = decoded.token
+                                                            clearGatewayToken = false
+                                                            clearGatewayPassword = true
                                                             setupCodeHasBootstrapOnly = false
                                                         }
                                                         setupCodeApplied = true
@@ -807,9 +871,15 @@ fun SettingsScreen(
                                     onValueChange = {
                                         gatewayBootstrapToken = ""
                                         gatewayToken = it
+                                        clearGatewayToken = false
                                         testResult = null
                                     },
                                     label = { Text(stringResource(R.string.gateway_token)) },
+                                    placeholder = {
+                                        if (gatewayTokenState.isNotBlank() && !clearGatewayToken) {
+                                            Text(stringResource(R.string.ctb_token_saved_hint))
+                                        }
+                                    },
                                     trailingIcon = {
                                         IconButton(onClick = { showNodeToken = !showNodeToken }) {
                                             Icon(
@@ -823,15 +893,26 @@ fun SettingsScreen(
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
                                 )
+                                if (gatewayTokenState.isNotBlank() && !clearGatewayToken) {
+                                    TextButton(onClick = { clearGatewayToken = true; gatewayToken = "" }) {
+                                        Text(stringResource(R.string.ctb_clear_saved_token))
+                                    }
+                                }
                             } else {
                                 OutlinedTextField(
                                     value = gatewayPassword,
                                     onValueChange = {
                                         gatewayBootstrapToken = ""
                                         gatewayPassword = it
+                                        clearGatewayPassword = false
                                         testResult = null
                                     },
                                     label = { Text(stringResource(R.string.gateway_password)) },
+                                    placeholder = {
+                                        if (runtime.getGatewayPassword()?.isNotBlank() == true && !clearGatewayPassword) {
+                                            Text(stringResource(R.string.credential_saved_hint))
+                                        }
+                                    },
                                     trailingIcon = {
                                         IconButton(onClick = { showGatewayPassword = !showGatewayPassword }) {
                                             Icon(
@@ -845,6 +926,11 @@ fun SettingsScreen(
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
                                 )
+                                if (runtime.getGatewayPassword()?.isNotBlank() == true && !clearGatewayPassword) {
+                                    TextButton(onClick = { clearGatewayPassword = true; gatewayPassword = "" }) {
+                                        Text(stringResource(R.string.clear_saved_credential))
+                                    }
+                                }
                             }
                             
                             Spacer(modifier = Modifier.height(8.dp))
@@ -883,7 +969,7 @@ fun SettingsScreen(
                             // CTB token: write-only. It is stored encrypted and
                             // never displayed after entry (Spec 001); leave the
                             // field blank to keep the saved token.
-                            var hasSavedHttpToken by remember { mutableStateOf(settings.authToken.isNotBlank()) }
+                            val hasSavedHttpToken = ctbBackend?.apiKeyOrToken?.isNotBlank() == true
                             OutlinedTextField(
                                 value = httpToken,
                                 onValueChange = { httpToken = it.trim(); testResult = null },
@@ -902,9 +988,8 @@ fun SettingsScreen(
                             if (hasSavedHttpToken) {
                                 // Explicit action: a blank field keeps the token.
                                 TextButton(onClick = {
-                                    settings.authToken = ""
+                                    ctbBackend?.let { backendRepository.upsert(it.copy(apiKeyOrToken = null)) }
                                     httpToken = ""
-                                    hasSavedHttpToken = false
                                 }) {
                                     Text(stringResource(R.string.ctb_clear_saved_token))
                                 }
@@ -1035,16 +1120,21 @@ fun SettingsScreen(
                                         try {
                                             isTesting = true
                                             testResult = null
-                                            val tokenForTest = httpToken.trim().ifBlank { settings.authToken }
+                                            val tokenForTest = httpToken.trim().ifBlank {
+                                                ctbBackend?.apiKeyOrToken.orEmpty()
+                                            }
                                             val result = apiClient.testConnection(httpInputUrl.trim(), tokenForTest)
                                             result.fold(
                                                 onSuccess = {
                                                     testResult = TestResult(success = true, message = context.getString(R.string.connected))
-                                                    settings.httpUrl = httpInputUrl.trim()
-                                                    if (httpToken.isNotBlank()) {
-                                                        settings.authToken = httpToken.trim()
-                                                        httpToken = ""
-                                                    }
+                                                    saveCtbBackend(
+                                                        repo = backendRepository,
+                                                        existing = ctbBackend,
+                                                        endpoint = httpInputUrl.trim(),
+                                                        newToken = httpToken,
+                                                        makePrimary = true,
+                                                    )
+                                                    httpToken = ""
                                                     settings.isVerified = true
                                                 },
                                                 onFailure = {
@@ -1216,7 +1306,9 @@ fun SettingsScreen(
                                 Spacer(modifier = Modifier.height(16.dp))
                                 ElevenLabsSettingsCard(
                                     apiKey = elevenLabsApiKey,
-                                    onApiKeyChange = { elevenLabsApiKey = it },
+                                    onApiKeyChange = { elevenLabsApiKey = it; clearElevenLabsApiKey = false },
+                                    hasSavedApiKey = settings.elevenLabsApiKey.isNotBlank() && !clearElevenLabsApiKey,
+                                    onClearApiKey = { clearElevenLabsApiKey = true; elevenLabsApiKey = "" },
                                     showApiKey = showElevenLabsApiKey,
                                     onShowApiKeyChange = { showElevenLabsApiKey = it },
                                     voiceId = elevenLabsVoiceId,
@@ -1229,7 +1321,9 @@ fun SettingsScreen(
                                 Spacer(modifier = Modifier.height(16.dp))
                                 OpenAISettingsCard(
                                     apiKey = openAiApiKey,
-                                    onApiKeyChange = { openAiApiKey = it },
+                                    onApiKeyChange = { openAiApiKey = it; clearOpenAiApiKey = false },
+                                    hasSavedApiKey = settings.openAiApiKey.isNotBlank() && !clearOpenAiApiKey,
+                                    onClearApiKey = { clearOpenAiApiKey = true; openAiApiKey = "" },
                                     showApiKey = showOpenAiApiKey,
                                     onShowApiKeyChange = { showOpenAiApiKey = it },
                                     voice = openAiVoice,
@@ -1826,43 +1920,6 @@ fun SettingsScreen(
                             context.packageManager.getPackageInfo(context.packageName, 0).versionName
                         }.getOrNull() ?: ""
                     }
-                    var isCheckingUpdate by remember { mutableStateOf(false) }
-
-                    Button(
-                        onClick = {
-                            isCheckingUpdate = true
-                            scope.launch {
-                                val info = com.openclaw.assistant.utils.UpdateChecker.checkUpdate(versionName)
-                                isCheckingUpdate = false
-                                if (info != null && info.hasUpdate) {
-                                    Toast.makeText(context, context.getString(R.string.update_available, info.latestVersion), Toast.LENGTH_LONG).show()
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.downloadUrl))
-                                    context.startActivity(intent)
-                                } else if (info != null) {
-                                    Toast.makeText(context, context.getString(R.string.up_to_date), Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, context.getString(R.string.error_network), Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (isCheckingUpdate) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.checking_update))
-                        } else {
-                            Icon(Icons.Default.SystemUpdate, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.check_for_updates))
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
 
                     Text(
                         text = stringResource(R.string.app_version, versionName),
@@ -2239,6 +2296,8 @@ private val FALLBACK_SPEECH_LANGUAGES = listOf(
 fun ElevenLabsSettingsCard(
     apiKey: String,
     onApiKeyChange: (String) -> Unit,
+    hasSavedApiKey: Boolean,
+    onClearApiKey: () -> Unit,
     voiceId: String,
     onVoiceIdChange: (String) -> Unit,
     showApiKey: Boolean,
@@ -2285,6 +2344,9 @@ fun ElevenLabsSettingsCard(
                 value = apiKey,
                 onValueChange = onApiKeyChange,
                 label = { Text(stringResource(R.string.elevenlabs_api_key_label)) },
+                placeholder = {
+                    if (hasSavedApiKey) Text(stringResource(R.string.credential_saved_hint))
+                },
                 trailingIcon = {
                     IconButton(onClick = { onShowApiKeyChange(!showApiKey) }) {
                         Icon(
@@ -2298,6 +2360,11 @@ fun ElevenLabsSettingsCard(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
+            if (hasSavedApiKey) {
+                TextButton(onClick = onClearApiKey) {
+                    Text(stringResource(R.string.clear_saved_credential))
+                }
+            }
             
             // API Key link button
             TextButton(
@@ -2453,6 +2520,8 @@ fun ElevenLabsSettingsCard(
 fun OpenAISettingsCard(
     apiKey: String,
     onApiKeyChange: (String) -> Unit,
+    hasSavedApiKey: Boolean,
+    onClearApiKey: () -> Unit,
     voice: String,
     onVoiceChange: (String) -> Unit,
     showApiKey: Boolean,
@@ -2480,6 +2549,9 @@ fun OpenAISettingsCard(
                 value = apiKey,
                 onValueChange = onApiKeyChange,
                 label = { Text("API Key") },
+                placeholder = {
+                    if (hasSavedApiKey) Text(stringResource(R.string.credential_saved_hint))
+                },
                 trailingIcon = {
                     IconButton(onClick = { onShowApiKeyChange(!showApiKey) }) {
                         Icon(
@@ -2493,6 +2565,11 @@ fun OpenAISettingsCard(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
+            if (hasSavedApiKey) {
+                TextButton(onClick = onClearApiKey) {
+                    Text(stringResource(R.string.clear_saved_credential))
+                }
+            }
             
             // API Key link button
             TextButton(

@@ -78,8 +78,6 @@ import com.openclaw.assistant.ui.components.CollapsibleSection
 import com.openclaw.assistant.ui.components.ConnectionState
 import com.openclaw.assistant.ui.components.PairingRequiredCard
 import com.openclaw.assistant.ui.components.StatusIndicator
-import com.openclaw.assistant.ui.terminal.TerminalScreen
-import com.openclaw.assistant.ui.terminal.TerminalViewModel
 import com.openclaw.assistant.ui.theme.OpenClawAssistantTheme
 import com.openclaw.assistant.ui.SetupGuideScreen
 
@@ -97,11 +95,8 @@ data class PermissionInfo(
 sealed class AppTab(val route: String, val labelResId: Int, val icon: ImageVector) {
     object Home     : AppTab("home",     R.string.tab_nav_home,     Icons.Default.Home)
     object Chat     : AppTab("chat",     R.string.tab_nav_chat,     Icons.AutoMirrored.Filled.Chat)
-    object Terminal : AppTab("terminal", R.string.tab_nav_terminal, Icons.Default.Terminal)
-    object Canvas   : AppTab("canvas",   R.string.tab_nav_canvas,   Icons.Default.Brush)
-    object Cron     : AppTab("cron",     R.string.tab_nav_cron,     Icons.Default.Schedule)
     object Settings : AppTab("settings", R.string.tab_nav_settings, Icons.Default.Settings)
-    companion object { val BOTTOM_NAV_TABS by lazy { listOf(Home, Chat, Terminal, Cron, Settings) } }
+    companion object { val BOTTOM_NAV_TABS by lazy { listOf(Home, Chat, Settings) } }
 }
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
@@ -321,16 +316,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (enabled) {
             // Check that a backend connection is configured before enabling wakeword.
             // The voice interaction session needs a backend to communicate with the AI.
-            val runtime = (applicationContext as OpenClawApplication).nodeRuntime
-            val isConnectionConfigured = if (settings.connectionType == SettingsRepository.CONNECTION_TYPE_GATEWAY) {
-                runtime.manualHost.value.isNotBlank()
-            } else {
-                settings.httpUrl.isNotBlank()
-            }
-            // Also allow when any backend is configured (Hermes API server, etc.)
+            // BackendRepository is authoritative after the one-shot migration.
             val backendManager = com.openclaw.assistant.backend.BackendManager.getInstance(this)
             val hasConfiguredBackend = backendManager.chatTargets().isNotEmpty()
-            if (!isConnectionConfigured && !hasConfiguredBackend) {
+            if (!hasConfiguredBackend) {
                 Toast.makeText(this, getString(R.string.wakeword_requires_connection_error), Toast.LENGTH_LONG).show()
                 return
             }
@@ -446,10 +435,7 @@ fun MainNavHost(
             restore = { route ->
                 when (route) {
                     AppTab.Chat.route     -> AppTab.Chat
-                    AppTab.Terminal.route -> AppTab.Terminal
-                    AppTab.Cron.route     -> AppTab.Cron
                     "bridge"              -> AppTab.Settings
-                    AppTab.Canvas.route   -> AppTab.Home
                     AppTab.Settings.route -> AppTab.Settings
                     else                  -> AppTab.Home
                 }
@@ -460,9 +446,6 @@ fun MainNavHost(
 
     val sessionListViewModel: SessionListViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     val context = LocalContext.current
-    val nodeRuntime = remember(context.applicationContext) {
-        (context.applicationContext as OpenClawApplication).nodeRuntime
-    }
     val availableTabs = remember { AppTab.BOTTOM_NAV_TABS }
 
     LaunchedEffect(selectedTab) {
@@ -537,25 +520,6 @@ fun MainNavHost(
                         },
                         onDeleteSession     = { id, gw -> sessionListViewModel.deleteSession(id, gw) },
                         onRenameSession     = { id, nm, gw -> sessionListViewModel.renameSession(id, nm, gw) }
-                    )
-                }
-                AppTab.Canvas -> {
-                    com.openclaw.assistant.ui.CanvasScreen(
-                        canvasController = nodeRuntime.canvas,
-                        nodeRuntime = nodeRuntime,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-                AppTab.Terminal -> {
-                    val terminalViewModel: TerminalViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
-                    TerminalScreen(
-                        viewModel = terminalViewModel,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-                AppTab.Cron -> {
-                    com.openclaw.assistant.ui.cron.CronScreen(
-                        modifier = Modifier.fillMaxSize()
                     )
                 }
                 AppTab.Settings -> {
@@ -641,26 +605,6 @@ fun MainScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
-    // Check for updates on startup
-    LaunchedEffect(Unit) {
-        try {
-            val versionName = context.packageManager.getPackageInfo(context.packageName, 0).versionName
-            val info = com.openclaw.assistant.utils.UpdateChecker.checkUpdate(versionName ?: "")
-            if (info != null && info.hasUpdate && settings.dismissedUpdateVersion != info.latestVersion) {
-                val result = snackbarHostState.showSnackbar(
-                    message = context.getString(R.string.update_available, info.latestVersion),
-                    actionLabel = context.getString(R.string.update_dismiss_action),
-                    duration = SnackbarDuration.Indefinite
-                )
-                if (result == SnackbarResult.ActionPerformed) {
-                    settings.dismissedUpdateVersion = info.latestVersion
-                }
-            }
-        } catch (e: Exception) {
-            // Ignore startup update check errors
         }
     }
 

@@ -62,7 +62,7 @@ class ElevenLabsProvider(private val context: Context) : TTSProvider {
                 tempFile.delete()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error speaking: ${e.message}", e)
+            Log.e(TAG, "Error speaking class=${e.javaClass.simpleName}")
             false
         }
     }
@@ -113,7 +113,7 @@ class ElevenLabsProvider(private val context: Context) : TTSProvider {
                 }
             }
         } catch (e: IOException) {
-            Log.e(TAG, "Network error: ${e.message}", e)
+            Log.e(TAG, "Network error class=${e.javaClass.simpleName}")
             null
         }
     }
@@ -140,7 +140,7 @@ class ElevenLabsProvider(private val context: Context) : TTSProvider {
                 prepareAsync()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error playing audio: ${e.message}", e)
+            Log.e(TAG, "Error playing audio class=${e.javaClass.simpleName}")
             if (continuation.isActive) {
                 continuation.resume(false)
             }
@@ -163,7 +163,7 @@ class ElevenLabsProvider(private val context: Context) : TTSProvider {
             mediaPlayer?.release()
             mediaPlayer = null
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping: ${e.message}")
+            Log.w(TAG, "Error stopping class=${e.javaClass.simpleName}")
         }
     }
     
@@ -262,7 +262,7 @@ class ElevenLabsProvider(private val context: Context) : TTSProvider {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error getting voices: ${e.message}", e)
+            Log.e(TAG, "Error getting voices class=${e.javaClass.simpleName}")
             emptyList()
         }
     }
@@ -284,7 +284,7 @@ class ElevenLabsProvider(private val context: Context) : TTSProvider {
                 )
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing voices: ${e.message}")
+            Log.e(TAG, "Error parsing voices class=${e.javaClass.simpleName}")
             emptyList()
         }
     }

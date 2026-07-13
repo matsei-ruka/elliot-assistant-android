@@ -59,7 +59,7 @@ object AgentDiagnostics {
             current.copy(
                 lastHealthOk = ok,
                 lastHealthLatencyMs = latencyMs,
-                lastError = error?.take(160),
+                lastError = error?.let { "health_error" },
                 updatedAtMs = System.currentTimeMillis(),
             )
         }
@@ -117,7 +117,7 @@ object AgentDiagnostics {
             update(backend) { current ->
                 current.copy(
                     streamsErrored = current.streamsErrored + 1,
-                    lastError = message?.take(160),
+                    lastError = message?.let { "backend_error" },
                     updatedAtMs = System.currentTimeMillis(),
                 )
             }

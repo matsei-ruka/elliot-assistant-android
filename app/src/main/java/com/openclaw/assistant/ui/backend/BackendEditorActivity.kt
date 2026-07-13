@@ -198,7 +198,8 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                     Spacer(Modifier.height(4.dp))
                     OutlinedTextField(value = publicUrl, onValueChange = { publicUrl = it }, label = { Text(stringResource(R.string.backend_public_url)) }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.av_import_api_key)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = token, onValueChange = { token = it; clearToken = false }, label = { Text(stringResource(R.string.av_import_api_key)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true && !clearToken) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    SavedTokenClearAction(existing?.apiKeyOrToken, clearToken) { clearToken = true; token = "" }
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(value = modelName, onValueChange = { modelName = it }, label = { Text(androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.av_import_model)) }, modifier = Modifier.fillMaxWidth())
                     Text(androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.av_import_model_help), style = MaterialTheme.typography.bodySmall)
@@ -277,7 +278,8 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(value = port, onValueChange = { port = it.filter(Char::isDigit) }, label = { Text(stringResource(R.string.gateway_port)) }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.backend_openclaw_token)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = token, onValueChange = { token = it; clearToken = false }, label = { Text(stringResource(R.string.backend_openclaw_token)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true && !clearToken) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    SavedTokenClearAction(existing?.apiKeyOrToken, clearToken) { clearToken = true; token = "" }
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Checkbox(checked = useTls, onCheckedChange = { useTls = it }); Text(stringResource(R.string.backend_use_tls))
                     }
@@ -290,12 +292,8 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                 BackendType.OPENCLAW_HTTP -> {
                     OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text(stringResource(R.string.backend_base_url)) }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.auth_token_label)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true && !clearToken) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                    if (existing?.apiKeyOrToken?.isNotBlank() == true && !clearToken) {
-                        TextButton(onClick = { clearToken = true; token = "" }) {
-                            Text(stringResource(R.string.ctb_clear_saved_token))
-                        }
-                    }
+                    OutlinedTextField(value = token, onValueChange = { token = it; clearToken = false }, label = { Text(stringResource(R.string.auth_token_label)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true && !clearToken) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    SavedTokenClearAction(existing?.apiKeyOrToken, clearToken) { clearToken = true; token = "" }
                 }
             }
 
@@ -329,6 +327,15 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
     }
 }
 
+@Composable
+private fun SavedTokenClearAction(stored: String?, clearPending: Boolean, onClear: () -> Unit) {
+    if (stored?.isNotBlank() == true && !clearPending) {
+        TextButton(onClick = onClear) {
+            Text(stringResource(R.string.ctb_clear_saved_token))
+        }
+    }
+}
+
 private fun buildConfig(
     existing: AgentBackendConfig?,
     type: BackendType,
@@ -353,7 +360,11 @@ private fun buildConfig(
         displayName = displayName.ifBlank { defaultName(type) },
         type = type,
         baseUrl = baseUrl.ifBlank { null },
-        apiKeyOrToken = token.ifBlank { if (clearToken) null else existing?.apiKeyOrToken },
+        apiKeyOrToken = com.openclaw.assistant.backend.WriteOnlyCredential.resolve(
+            entry = token,
+            stored = existing?.apiKeyOrToken,
+            clear = clearToken,
+        ),
         host = host.ifBlank { null },
         port = port.toIntOrNull(),
         useTls = useTls,

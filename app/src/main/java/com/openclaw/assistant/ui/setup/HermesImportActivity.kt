@@ -727,18 +727,11 @@ internal fun applyPairingPayload(
         runtime.setGatewayPassword(decoded.password.orEmpty())
         runtime.setGatewayToken("")
         runtime.prefs.saveGatewayToken(decoded.token.orEmpty())
-        settings.authToken = decoded.token.orEmpty()
         if (decoded.token != null && decoded.password != null) {
             // Token takes precedence in GatewaySession; keep imported setup codes
             // deterministic by not retaining a lower-priority password alongside it.
             runtime.setGatewayPassword("")
         }
-        GatewayConfigUtils.composeGatewayManualUrl(parsed.host, parsed.port.toString(), parsed.tls)
-            ?.let { url ->
-                if (com.openclaw.assistant.shared.utils.NetworkUtils.isUrlSecure(url)) {
-                    settings.httpUrl = url
-                }
-            }
         runtime.setManualEnabled(true)
         settings.connectionType = SettingsRepository.CONNECTION_TYPE_GATEWAY
         runtime.connectManual()

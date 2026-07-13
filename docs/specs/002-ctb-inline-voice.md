@@ -1,6 +1,6 @@
 # 002 — CTB inline voice transport for Android Assistant
 
-**Status:** accepted for implementation  
+**Status:** implemented and host-verified 2026-07-13; device acceptance pending
 **Target repository:** `matsei-ruka/elliot-assistant-android`  
 **Android baseline:** `feat/ctb-text-foundation` at `7b5dcf0`  
 **Server contract:** `matsei-ruka/completion-telegram-bridge` v0.2.0 at `4e618f0`  
@@ -149,12 +149,13 @@ reply bytes to Telegram OGG/Opus. The parser accepts an optional future
 and always verifies the actual bytes before playback. It never trusts a filename,
 MIME string, or the inference alone.
 
-The parser prefers `choices[0].message.audio.data`. If no audio object is present
-and non-empty `message.content` exists, the app invokes the existing local TTS
-path exactly once. An empty completion, invalid Base64, unsupported declared
-format, oversized body/audio, bad OGG magic, missing `OpusHead`, decode failure,
-or player preparation failure is a visible error. Raw JSON and server response
-bodies are never spoken.
+The parser prefers `choices[0].message.audio.data`. If no **valid** audio reply is
+available and non-empty `message.content` exists, including when a supplied audio
+object fails format, size, Base64, OGG or Opus validation, the app rejects that
+audio and invokes the existing local TTS path exactly once. If there is no valid
+text fallback, the invalid audio is a visible error. An empty completion,
+oversized response body, or player preparation failure is likewise a visible
+error. Raw JSON and server response bodies are never spoken.
 
 ## Limits and bounded memory
 

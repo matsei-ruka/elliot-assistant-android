@@ -7,10 +7,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.content.Intent
 import android.net.Uri
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
-import com.google.android.gms.common.moduleinstall.ModuleInstall
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -74,6 +70,7 @@ import com.openclaw.assistant.ui.setup.parsePairingPayload
 import com.openclaw.assistant.ui.setup.toEditablePairingPayload
 import com.openclaw.assistant.ui.setup.toPairingPayload
 import com.openclaw.assistant.ui.theme.*
+import com.openclaw.assistant.ui.backend.BackendListActivity
 import com.openclaw.assistant.utils.GatewayConfigUtils
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontFamily
@@ -149,7 +146,8 @@ fun SetupGuideScreen(
     // UI State for Connection step. CTB is the default mode for a fresh
     // install: no QR, no Gateway required.
     var connectionMode by rememberSaveable { mutableStateOf(ConnectionMode.CTB) }
-    var setupCode by rememberSaveable { mutableStateOf("") }
+    // Gateway setup codes may contain credentials: never save them in a Bundle.
+    var setupCode by remember { mutableStateOf("") }
     var manualHost by rememberSaveable { mutableStateOf(runtime.manualHost.value) }
     var manualPort by rememberSaveable { mutableStateOf(runtime.manualPort.value.toString()) }
     var manualTls by rememberSaveable { mutableStateOf(runtime.manualTls.value) }
@@ -268,8 +266,10 @@ fun SetupGuideScreen(
                                 )
                                 val config = base.copy(
                                     baseUrl = ctbEndpoint.trim(),
-                                    apiKeyOrToken = ctbToken.trim()
-                                        .ifBlank { existingCtbBackend?.apiKeyOrToken },
+                                    apiKeyOrToken = com.openclaw.assistant.backend.WriteOnlyCredential.resolve(
+                                        entry = ctbToken,
+                                        stored = existingCtbBackend?.apiKeyOrToken,
+                                    ),
                                     modelName = ctbModel.trim().ifBlank { CTB_DEFAULT_MODEL },
                                     // CTB rejects streaming (Spec 001 §B.3).
                                     useStreaming = false,
@@ -278,6 +278,9 @@ fun SetupGuideScreen(
                                 )
                                 backendRepository.upsert(config)
                                 backendRepository.setPrimary(config.id)
+                                settings.connectionType = SettingsRepository.CONNECTION_TYPE_HTTP
+                                settings.wakewordConnectionType = SettingsRepository.CONNECTION_TYPE_HTTP
+                                settings.useNodeChat = false
                                 ctbToken = ""
                                 currentStep = SetupStep.Permissions
                             }
@@ -586,6 +589,13 @@ private fun ConnectionStep(
             )
         } else if (effectiveMode == ConnectionMode.Hermes) {
             AgentVoiceUnifiedPairingContent(configuredBackendCount = configuredBackendCount)
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = { context.startActivity(Intent(context, BackendListActivity::class.java)) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.av_backends_manage))
+            }
             pairingReview?.let { draft ->
                 Spacer(modifier = Modifier.height(16.dp))
                 PairingPayloadReviewEditor(
@@ -616,67 +626,14 @@ private fun ConnectionStep(
             CommandBlock("agentvoice-pair")
             Spacer(modifier = Modifier.height(8.dp))
 
-            OutlinedButton(
-                onClick = {
-                    val options = GmsBarcodeScannerOptions.Builder()
-                        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                        .build()
-                    val scanner = GmsBarcodeScanning.getClient(context, options)
-                    ModuleInstall.getClient(context)
-                        .areModulesAvailable(scanner)
-                        .addOnSuccessListener { response ->
-                            if (response.areModulesAvailable()) {
-                                scanner.startScan()
-                                    .addOnSuccessListener { barcode ->
-                                        barcode.rawValue?.let { rawValue ->
-                                            val raw = rawValue.trim()
-                                            val pairingPayload = parsePairingPayload(raw)
-                                            if (pairingPayload != null) {
-                                                applyPairingPayload(context, pairingPayload, BackendType.OPENCLAW_GATEWAY)
-                                                pairingPayload.openClawSetupCode?.let(onSetupCodeChange)
-                                                onModeChange(ConnectionMode.SetupCode)
-                                            } else {
-                                                // agentvoice-pair/openclaw can wrap the Gateway setup code in
-                                                // {"setupCode":"base64..."} JSON; extract the inner code.
-                                                val code = try {
-                                                    org.json.JSONObject(raw)
-                                                        .optString("setupCode")
-                                                        .takeIf { it.isNotBlank() } ?: raw
-                                                } catch (_: Exception) {
-                                                    raw
-                                                }
-                                                onSetupCodeChange(code)
-                                            }
-                                        }
-                                    }
-                                    .addOnFailureListener { /* scan cancelled or failed — no action needed */ }
-                            } else {
-                                android.widget.Toast.makeText(
-                                    context,
-                                    context.getString(R.string.qr_scan_unavailable),
-                                    android.widget.Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                        .addOnFailureListener {
-                            android.widget.Toast.makeText(
-                                context,
-                                context.getString(R.string.qr_scan_unavailable),
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
-                    contentColor = OnboardingGradientMid
-                ),
-                border = androidx.compose.foundation.BorderStroke(1.dp, OnboardingGradientMid)
-            ) {
-                Icon(Icons.Default.QrCodeScanner, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(R.string.qr_scan_prompt), fontSize = 16.sp)
-            }
+            OutlinedTextField(
+                value = setupCode,
+                onValueChange = onSetupCodeChange,
+                label = { Text(stringResource(R.string.setup_guide_setup_code_label)) },
+                placeholder = { Text(stringResource(R.string.setup_guide_setup_code_hint)) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = false,
+            )
 
             // Show scan result
             if (setupCode.isNotBlank()) {
@@ -761,13 +718,6 @@ private fun ConnectionStep(
 
         Spacer(modifier = Modifier.height(12.dp))
         if (mode == ConnectionMode.Hermes) {
-            PairingScanButton(
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                onScanned = { payload ->
-                    pairingReview = payload.toEditablePairingPayload()
-                    pairingStatus = context.getString(R.string.av_pairing_review_loaded)
-                }
-            )
             val readyText = pairingStatus ?: if (configuredBackendCount > 0) {
                 stringResource(R.string.setup_guide_connection_ready, configuredBackendCount)
             } else {
@@ -844,53 +794,6 @@ private fun AgentVoiceUnifiedPairingContent(configuredBackendCount: Int) {
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun PairingScanButton(
-    modifier: Modifier = Modifier,
-    onScanned: (com.openclaw.assistant.ui.setup.PairingPayload) -> Unit
-) {
-    val context = LocalContext.current
-    OutlinedButton(
-        onClick = {
-            val options = GmsBarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                .build()
-            val scanner = GmsBarcodeScanning.getClient(context, options)
-            scanner.startScan()
-                .addOnSuccessListener { barcode ->
-                    val raw = barcode.rawValue?.trim().orEmpty()
-                    val pairingPayload = parsePairingPayload(raw)
-                    if (pairingPayload != null) {
-                        onScanned(pairingPayload)
-                    } else if (raw.startsWith("agentvoice://")) {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(raw)))
-                    } else {
-                        android.widget.Toast.makeText(
-                            context,
-                            context.getString(R.string.qr_scan_unavailable),
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-                .addOnFailureListener {
-                    android.widget.Toast.makeText(
-                        context,
-                        context.getString(R.string.qr_scan_unavailable),
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
-        },
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = OnboardingGradientMid),
-        border = androidx.compose.foundation.BorderStroke(1.dp, OnboardingGradientMid)
-    ) {
-        Icon(Icons.Default.QrCodeScanner, contentDescription = null)
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(stringResource(R.string.av_pairing_scan_qr))
     }
 }
 

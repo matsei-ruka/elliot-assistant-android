@@ -88,11 +88,11 @@ class ChatController(
 
   fun applyMainSessionKey(mainSessionKey: String) {
     val trimmed = mainSessionKey.trim()
-    Log.d("AgentDbg", "ChatController.applyMainSessionKey: current=${_sessionKey.value} candidate=$trimmed")
+    Log.d("AgentDbg", "ChatController.applyMainSessionKey: evaluating")
     if (trimmed.isEmpty()) return
     if (_sessionKey.value == trimmed) return
     if (_sessionKey.value != "main") return
-    Log.d("AgentDbg", "ChatController.applyMainSessionKey: applying $trimmed (was 'main')")
+    Log.d("AgentDbg", "ChatController.applyMainSessionKey: applying")
     _sessionKey.value = trimmed
     bootstrapJob?.cancel()
     bootstrapJob = scope.launch { bootstrap(forceHealth = true, clearMessages = true) }
@@ -115,7 +115,7 @@ class ChatController(
 
   fun switchSession(sessionKey: String) {
     val key = sessionKey.trim()
-    Log.d("AgentDbg", "ChatController.switchSession: from=${_sessionKey.value} to=$key")
+    Log.d("AgentDbg", "ChatController.switchSession")
     if (key.isEmpty()) return
     if (key == _sessionKey.value) return
     _sessionKey.value = key
@@ -202,11 +202,10 @@ class ChatController(
               )
             }
           }
-        Log.d("ChatDbg", "chat.send start idempotencyKey=$runId sessionKey=$sessionKey")
-        Log.d("ChatDbg", "chat.send payload: ${params.toString().take(1000)}")
+        Log.d("ChatDbg", "chat.send start requestId=$runId attachmentCount=${attachments.size}")
         val res = session.request("chat.send", params.toString(), timeoutMs = 35_000)
         val actualRunId = parseRunId(res) ?: runId
-        Log.d("ChatDbg", "chat.send response: actualRunId=$actualRunId (same=${actualRunId == runId}) res=$res")
+        Log.d("ChatDbg", "chat.send response requestId=$runId sameRun=${actualRunId == runId}")
         if (actualRunId != runId) {
           clearPendingRun(runId)
           armPendingRunTimeout(actualRunId)
@@ -217,7 +216,7 @@ class ChatController(
         }
       } catch (err: Throwable) {
         if (err is CancellationException) throw err
-        Log.e("ChatDbg", "chat.send error: ${err.message}")
+        Log.e("ChatDbg", "chat.send error class=${err.javaClass.simpleName}")
         clearPendingRun(runId)
         _errorText.value = err.message
       }
@@ -233,11 +232,10 @@ class ChatController(
     scope.launch {
       for (runId in runIds) {
         try {
-          val params =
-            buildJsonObject {
-              put("sessionKey", JsonPrimitive(_sessionKey.value))
-              put("runId", JsonPrimitive(runId))
-            }
+          val params = buildJsonObject {
+            put("sessionKey", JsonPrimitive(_sessionKey.value))
+            put("runId", JsonPrimitive(runId))
+          }
           session.request("chat.abort", params.toString())
         } catch (_: Throwable) {
           // best-effort
@@ -344,22 +342,21 @@ class ChatController(
       // Accept the event if the gateway key ends with our key (e.g. "agent:x:chat-ts" ends with "chat-ts")
       // and update _sessionKey to the canonical form so future events match.
       if (_sessionKey.value.isNotEmpty() && sessionKey.endsWith(":${_sessionKey.value}")) {
-        Log.d("ChatDbg", "handleChatEvent: upgrading sessionKey ${_sessionKey.value} -> $sessionKey")
+        Log.d("ChatDbg", "handleChatEvent: upgrading session")
         _sessionKey.value = sessionKey
       } else {
-        Log.d("ChatDbg", "handleChatEvent: sessionKey mismatch event=$sessionKey current=${_sessionKey.value}, skipping")
+        Log.d("ChatDbg", "handleChatEvent: session mismatch, skipping")
         return
       }
     }
 
     val runId = payload["runId"].asStringOrNull()
     val state = payload["state"].asStringOrNull()
-    Log.d("ChatDbg", "handleChatEvent: state=$state runId=$runId sessionKey=$sessionKey pendingRuns=${synchronized(pendingRuns){pendingRuns.toList()}}")
+    Log.d("ChatDbg", "handleChatEvent: state=$state requestId=$runId pendingCount=${synchronized(pendingRuns) { pendingRuns.size }}")
     if (runId != null) {
-      val isPending =
-        synchronized(pendingRuns) {
-          pendingRuns.contains(runId)
-        }
+      val isPending = synchronized(pendingRuns) {
+        pendingRuns.contains(runId)
+      }
       // For terminal states, allow through even if runId is unknown (e.g. server-assigned runId
       // that differs from the client-generated idempotencyKey). Non-terminal states still require
       // the runId to be tracked to avoid processing stale streaming updates.
@@ -386,8 +383,8 @@ class ChatController(
             val historyJson =
               session.request("chat.history", """{"sessionKey":"${_sessionKey.value}"}""")
             val history = parseHistory(historyJson, sessionKey = _sessionKey.value, previousMessages = _messages.value)
-            val lastMsg = history.messages.lastOrNull()
-            Log.d("ChatDbg", "handleChatEvent: history reloaded msgCount=${history.messages.size} state=$state lastRole=${lastMsg?.role} lastText=${lastMsg?.content?.firstOrNull()?.text?.take(50)}")
+            val lastRole = history.messages.lastOrNull()?.role
+            Log.d("ChatDbg", "handleChatEvent: history reloaded msgCount=${history.messages.size} state=$state lastRole=$lastRole")
             _messages.value = history.messages
             _sessionId.value = history.sessionId
             history.thinkingLevel?.trim()?.takeIf { it.isNotEmpty() }?.let { _thinkingLevel.value = it }
@@ -403,7 +400,9 @@ class ChatController(
     val payload = json.parseToJsonElement(payloadJson).asObjectOrNull() ?: return
     val runId = payload["runId"].asStringOrNull()
     val sessionId = _sessionId.value
-    if (sessionId != null && runId != sessionId) return
+    if (sessionId != null && runId != sessionId) {
+      return
+    }
 
     val stream = payload["stream"].asStringOrNull()
     val data = payload["data"].asObjectOrNull()

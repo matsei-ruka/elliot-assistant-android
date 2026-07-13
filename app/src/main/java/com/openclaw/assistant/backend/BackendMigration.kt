@@ -18,7 +18,13 @@ import com.openclaw.assistant.data.SettingsRepository
  */
 object BackendMigration {
     fun runIfNeeded(context: Context, repo: BackendRepository = BackendRepository.getInstance(context)): MigrationResult {
-        if (repo.backends.value.isNotEmpty()) return MigrationResult.AlreadyMigrated
+        if (repo.backends.value.isNotEmpty()) {
+            // A previous version may already have populated BackendRepository
+            // while leaving the legacy duplicate behind. The repository is now
+            // authoritative even when no new migration is needed.
+            runCatching { SettingsRepository(context) }.getOrNull()?.let(::clearLegacyHttp)
+            return MigrationResult.AlreadyMigrated
+        }
 
         val securePrefs = runCatching { SecurePrefs(context) }.getOrNull()
         val settings = runCatching { SettingsRepository(context) }.getOrNull()
@@ -54,7 +60,18 @@ object BackendMigration {
 
         if (created.isEmpty()) return MigrationResult.NothingToMigrate
         created.forEach(repo::upsert)
+        // BackendRepository is authoritative after migration. Remove the
+        // duplicated legacy HTTP credential so future UI/code cannot drift or
+        // accidentally copy CTB secrets between stores.
+        if (created.any { it.type == BackendType.OPENCLAW_HTTP }) {
+            settings?.let(::clearLegacyHttp)
+        }
         return MigrationResult.Migrated(created.size)
+    }
+
+    private fun clearLegacyHttp(settings: SettingsRepository) {
+        settings.authToken = ""
+        settings.httpUrl = ""
     }
 
     sealed class MigrationResult {

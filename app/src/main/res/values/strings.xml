@@ -325,6 +325,8 @@
     <string name="ctb_verify_desc">Verify the bridge with GET /healthz on its origin. No message is sent to Telegram, and the token is only validated by your first real request.</string>
     <string name="ctb_health_ok">Bridge healthy</string>
     <string name="ctb_clear_saved_token">Clear saved token</string>
+    <string name="credential_saved_hint">Credential saved — enter a new value to replace it</string>
+    <string name="clear_saved_credential">Clear saved credential</string>
     <string name="ctb_backend_display_name">Telegram Bridge (CTB)</string>
     <string name="permission_summary_ctb_format">%1$d of %2$d permissions granted</string>
     <string name="session_id_label">Session ID</string>
@@ -343,6 +345,8 @@
     <string name="stop_description">Stop</string>
     <string name="start_listening_description">Start listening</string>
     <string name="interrupt_description">Interrupt and listen</string>
+    <string name="stop_recording_description">Stop recording and send</string>
+    <string name="stop_recording_hint">Tap the microphone to stop and send</string>
     <string name="listening">Listening…</string>
     <string name="thinking">Thinking…</string>
     <string name="speaking">Speaking…</string>

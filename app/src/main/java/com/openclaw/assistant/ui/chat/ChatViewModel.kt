@@ -8,7 +8,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.openclaw.assistant.OpenClawApplication
 import com.openclaw.assistant.R
-import com.openclaw.assistant.api.OpenClawClient
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.chat.ChatMarkdownPreprocessor
 import com.openclaw.assistant.gateway.AgentInfo
@@ -74,7 +73,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val settings = SettingsRepository.getInstance(application)
     private val chatRepository = com.openclaw.assistant.data.repository.ChatRepository.getInstance(application)
-    private val apiClient = OpenClawClient()
     private val nodeRuntime = (application as OpenClawApplication).nodeRuntime
     private val speechManager = SpeechRecognizerManager(application)
     private val toneGenerator = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100)
@@ -606,59 +604,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun sendViaHttp(sessionId: String, text: String, attachments: List<PendingFileAttachment> = emptyList()) {
-        val httpUrl = settings.getChatCompletionsUrl()
-        val authToken = settings.authToken.takeIf { it.isNotBlank() }
         val effectiveAgentId = getEffectiveAgentId()
 
         chatRepository.applicationScope.launch {
             try {
-                // Route through the selected backend when Chat has an explicit
-                // override, otherwise through the Primary backend. If no
-                // multi-backend config exists yet, fall back to the legacy
-                // OpenClaw HTTP settings below.
-                val backendText = trySendViaSelectedBackend(sessionId, text, effectiveAgentId)
-                if (backendText != null) {
-                    chatRepository.addMessage(sessionId, backendText, isUser = false)
-                    viewModelScope.launch {
-                        stopThinkingSound()
-                        _uiState.update { it.copy(isThinking = false) }
-                        afterResponseReceived(backendText)
-                    }
-                    return@launch
+                if (attachments.isNotEmpty()) {
+                    throw IllegalStateException("Attachments are unavailable for the restricted CTB chat path")
                 }
-
-                val result = apiClient.sendMessage(
-                    httpUrl = httpUrl,
-                    message = text,
-                    // Stable per-install random ID as the OpenAI `user` field
-                    // (Spec 001): CTB continuity without a rotating session or
-                    // personal identifier.
-                    sessionId = settings.installUserId,
-                    authToken = authToken,
-                    agentId = effectiveAgentId,
-                    modelName = resolveSelectedOpenClawModel(),
-                    attachments = attachments.map { Pair(it.mimeType, it.base64) }
-                )
-
-                result.fold(
-                    onSuccess = { response ->
-                        val responseText = response.getResponseText() ?: "No response"
-                        chatRepository.addMessage(sessionId, responseText, isUser = false)
-
-                        viewModelScope.launch {
-                            stopThinkingSound()
-                            _uiState.update { it.copy(isThinking = false) }
-                            afterResponseReceived(responseText)
-                        }
-                    },
-                    onFailure = { error ->
-                        viewModelScope.launch {
-                            cancelInitialFillerPhrase()
-                            stopThinkingSound()
-                            _uiState.update { it.copy(isThinking = false, error = error.message) }
-                        }
-                    }
-                )
+                // BackendRepository is authoritative after the one-shot legacy
+                // migration. Never read or copy the old plaintext HTTP token.
+                val backendText = trySendViaSelectedBackend(sessionId, text, effectiveAgentId)
+                    ?: throw IllegalStateException("No enabled backend is configured")
+                chatRepository.addMessage(sessionId, backendText, isUser = false)
+                viewModelScope.launch {
+                    stopThinkingSound()
+                    _uiState.update { it.copy(isThinking = false) }
+                    afterResponseReceived(backendText)
+                }
             } catch (e: Exception) {
                 viewModelScope.launch {
                     cancelInitialFillerPhrase()
@@ -1205,9 +1167,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Sends `text` through the Chat-selected backend, or the Primary backend
-     * when the selector is set to Primary. Returns null only when there are no
-     * configured multi-backends yet, in which case callers use the legacy
-     * OpenClaw HTTP settings.
+     * when the selector is set to Primary. Returns null only when the
+     * authoritative BackendRepository has no configured target.
      */
     private suspend fun trySendViaSelectedBackend(sessionId: String, text: String, agentId: String?): String? {
         val ctx = getApplication<Application>().applicationContext

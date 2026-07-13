@@ -4,6 +4,11 @@ Acceptance run for [Spec 001 — CTB text foundation](../specs/001-ctb-text-foun
 Record Android version, device model, network kind, elapsed time and outcome;
 never record prompt or reply content.
 
+The default-Assistant CTB route is now the raw inline-audio flow in
+[Spec 002's acceptance record](ctb-inline-voice.md). The matrix below remains
+the text-foundation/legacy-path record and must not be used to claim that CTB
+Assistant audio passed through local STT/TTS.
+
 ## Automated verification (this commit)
 
 | Check | Result |
