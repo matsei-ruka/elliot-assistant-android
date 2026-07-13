@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-<string name="app_name">WakeHermesClaw</string>
+<string name="app_name">Elliot Assistant</string>
 <string name="notification_channel_name">Service Wake Word</string>
 <string name="notification_channel_description">Service de détection vocale toujours actif</string>
-<string name="notification_title">WakeHermesClaw</string>
+<string name="notification_title">Elliot Assistant</string>
 <string name="notification_content">Dites \"%s\" pour activer</string>
 <string name="default_session_title_format">Séance vocale %s</string>
 <string name="chat_session_title_format">Chat %s</string>
@@ -671,7 +671,6 @@ Pour plus de détails, consultez le site officiel de VOICEVOX.</string>
     <!-- WakeHermesClaw setup wizard -->
     <string name="av_setup_title">Configurer WakeHermesClaw</string>
     <string name="av_setup_welcome_title">Bienvenue dans WakeHermesClaw</string>
-    <string name="av_setup_welcome_body">Un client vocal Android natif pour Hermes Agent et OpenClaw. Lancez le helper d\'appairage sur votre ordinateur, choisissez Hermes, OpenClaw et Tailscale, puis scannez un seul QR dans cette app.</string>
     <string name="av_setup_choose_title">Quels backends allez-vous utiliser ?</string>
     <string name="av_setup_choose_hint">Cochez-en au moins un. Vous pourrez en ajouter plus tard dans Paramètres → Backends.</string>
     <string name="av_setup_get_started">Commencer</string>

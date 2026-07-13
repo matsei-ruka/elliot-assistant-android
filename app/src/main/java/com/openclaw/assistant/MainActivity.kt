@@ -607,7 +607,6 @@ fun MainScreen(
     val displayWakeWord = settings.getWakeWordDisplayName()
     var isAssistantSet by remember { mutableStateOf((context as? MainActivity)?.isAssistantActive() ?: false) }
     val nodeConnected by runtime.isConnected.collectAsState()
-    val nodeStatusText by runtime.statusText.collectAsState()
     var showTroubleshooting by rememberSaveable { mutableStateOf(false) }
     var showHowToUse by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -707,16 +706,9 @@ fun MainScreen(
                     onDecline = { runtime.declineGatewayTrustPrompt() }
                 )
             }
-            val displayStatusText = when (nodeStatusText) {
-                "Operator Online (Node Offline)" -> stringResource(R.string.status_operator_online_node_offline)
-                "Node Online (Operator Offline)" -> stringResource(R.string.status_node_online_operator_offline)
-                "Offline" -> stringResource(R.string.status_offline)
-                else -> nodeStatusText
-            }
             com.openclaw.assistant.ui.backend.PrimaryBackendCard(
-                openClawConnected = nodeConnected,
-                openClawStatusText = displayStatusText,
-                onOpenClawTest = { runtime.connectManual() },
+                gatewayConnected = nodeConnected,
+                onGatewayTest = { runtime.connectManual() },
             )
             Spacer(modifier = Modifier.height(12.dp))
             // Show alert if missing scope error is present

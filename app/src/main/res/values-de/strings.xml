@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-<string name="app_name">WakeHermesClaw</string>
+<string name="app_name">Elliot Assistant</string>
 <string name="notification_channel_name">Wake-Word-Dienst</string>
 <string name="notification_channel_description">Ständig verfügbarer Spracherkennungsdienst</string>
-<string name="notification_title">WakeHermesClaw</string>
+<string name="notification_title">Elliot Assistant</string>
 <string name="notification_content">Sagen Sie zum Aktivieren „%s“.</string>
 <string name="default_session_title_format">Sprachsitzung %s</string>
 <string name="chat_session_title_format">Chat %s</string>
@@ -670,7 +670,6 @@ Weitere Informationen finden Sie auf der offiziellen Website von VOICEVOX.</stri
     <!-- WakeHermesClaw setup wizard -->
     <string name="av_setup_title">WakeHermesClaw einrichten</string>
     <string name="av_setup_welcome_title">Willkommen bei WakeHermesClaw</string>
-    <string name="av_setup_welcome_body">Ein nativer Android-Sprachclient für Hermes Agent und OpenClaw. Führen Sie den Pairing-Helper auf dem Computer aus, wählen Sie Hermes, OpenClaw und Tailscale aus und scannen Sie einen einzigen QR in dieser App.</string>
     <string name="av_setup_choose_title">Welche Backends nutzt du?</string>
     <string name="av_setup_choose_hint">Mindestens eines auswählen. Weitere kannst du später unter Einstellungen → Backends hinzufügen.</string>
     <string name="av_setup_get_started">Loslegen</string>

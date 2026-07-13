@@ -39,30 +39,38 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * Home connections card, driven by the backends that are actually
+ * configured: one tile per enabled backend (primary first), instead of the
+ * upstream hardcoded OpenClaw + Hermes product tiles. A fresh CTB install
+ * shows a single "Telegram Bridge (CTB)" tile whose status comes from
+ * `GET /healthz` — never from gateway connectivity, and never a chat ping.
+ */
 @Composable
 fun PrimaryBackendCard(
-    openClawConnected: Boolean = false,
-    openClawStatusText: String = "",
-    onOpenClawTest: (() -> Unit)? = null,
+    gatewayConnected: Boolean = false,
+    onGatewayTest: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val manager = remember { BackendManager.getInstance(context) }
     val backends by manager.backends.collectAsState()
-    val openClaw = remember(backends) { backends.preferredOpenClawBackend() }
-    val hermes = remember(backends) { backends.preferredHermesBackend() }
-    var hermesTest by remember { mutableStateOf<ConnectionTestResult?>(null) }
+    val visible = remember(backends) {
+        backends.filter { it.enabled }.sortedByDescending { it.isPrimary }.take(3)
+    }
+    var testResults by remember { mutableStateOf<Map<String, ConnectionTestResult>>(emptyMap()) }
     val scope = rememberCoroutineScope()
-    val hasConfiguredBackend = openClaw != null || hermes != null
     val connectionTestingText = stringResource(R.string.av_connection_testing)
 
-    LaunchedEffect(hermes?.id, hermes?.updatedAt) {
-        val config = hermes
-        if (config == null) {
-            hermesTest = null
-        } else {
-            hermesTest = ConnectionTestResult(false, connectionTestingText)
-            hermesTest = withContext(Dispatchers.IO) { AgentClientFactory.create(config).testConnection() }
-        }
+    suspend fun probe(config: AgentBackendConfig) {
+        testResults = testResults + (config.id to ConnectionTestResult(false, connectionTestingText))
+        val result = withContext(Dispatchers.IO) { AgentClientFactory.create(config).testConnection() }
+        testResults = testResults + (config.id to result)
+    }
+
+    // HTTP (CTB) and Hermes backends are probed on entry; the healthz probe
+    // is side-effect free. Gateway status comes from the runtime connection.
+    LaunchedEffect(visible.map { it.id to it.updatedAt }) {
+        visible.filter { it.type != BackendType.OPENCLAW_GATEWAY }.forEach { probe(it) }
     }
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -71,46 +79,44 @@ fun PrimaryBackendCard(
                 text = stringResource(R.string.av_home_connections_title),
                 style = MaterialTheme.typography.titleMedium,
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                BackendProductTile(
-                    name = "OpenClaw",
-                    configured = openClaw != null,
-                    connected = openClawConnected,
-                    statusText = when {
-                        openClawConnected -> stringResource(R.string.av_home_connected)
-                        openClaw != null -> stringResource(R.string.av_home_disconnected)
-                        else -> stringResource(R.string.av_home_not_configured)
-                    },
-                    modifier = Modifier.weight(1f),
+            if (visible.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.av_home_not_configured),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                BackendProductTile(
-                    name = "Hermes Agent",
-                    configured = hermes != null,
-                    connected = hermesTest?.ok == true,
-                    testing = hermes != null && hermesTest?.message == connectionTestingText,
-                    statusText = when {
-                        hermesTest?.ok == true -> stringResource(R.string.av_home_connected)
-                        hermesTest != null -> hermesTest?.message ?: stringResource(R.string.av_home_disconnected)
-                        hermes != null -> connectionTestingText
-                        else -> stringResource(R.string.av_home_not_configured)
-                    },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            if (hasConfiguredBackend) {
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    visible.forEach { backend ->
+                        val isGateway = backend.type == BackendType.OPENCLAW_GATEWAY
+                        val test = testResults[backend.id]
+                        val testing = !isGateway && test?.message == connectionTestingText
+                        val connected = if (isGateway) gatewayConnected else test?.ok == true
+                        BackendProductTile(
+                            name = backend.tileLabel(),
+                            connected = connected,
+                            testing = testing,
+                            statusText = when {
+                                connected -> stringResource(R.string.av_home_connected)
+                                testing -> connectionTestingText
+                                !isGateway && test != null -> test.message
+                                else -> stringResource(R.string.av_home_disconnected)
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
                 Button(
                     onClick = {
-                        if (openClaw != null) {
-                            onOpenClawTest?.invoke()
+                        if (visible.any { it.type == BackendType.OPENCLAW_GATEWAY }) {
+                            onGatewayTest?.invoke()
                         }
-                        hermes?.let { config ->
-                            scope.launch {
-                                hermesTest = ConnectionTestResult(false, connectionTestingText)
-                                hermesTest = withContext(Dispatchers.IO) { AgentClientFactory.create(config).testConnection() }
-                            }
+                        scope.launch {
+                            visible.filter { it.type != BackendType.OPENCLAW_GATEWAY }
+                                .forEach { probe(it) }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -122,10 +128,25 @@ fun PrimaryBackendCard(
     }
 }
 
+/**
+ * User-facing tile label. Legacy migrated configs carry upstream product
+ * names ("OpenClaw HTTP"); the CTB build shows the Telegram Bridge label
+ * instead of upstream branding.
+ */
+@Composable
+private fun AgentBackendConfig.tileLabel(): String = when (type) {
+    BackendType.OPENCLAW_HTTP ->
+        displayName.takeUnless { it.isBlank() || it.startsWith("OpenClaw") }
+            ?: stringResource(R.string.ctb_backend_display_name)
+    BackendType.HERMES_API_SERVER ->
+        displayName.ifBlank { stringResource(R.string.setup_mode_hermes) }
+    BackendType.OPENCLAW_GATEWAY ->
+        displayName.ifBlank { stringResource(R.string.setup_mode_gateway) }
+}
+
 @Composable
 private fun BackendProductTile(
     name: String,
-    configured: Boolean,
     connected: Boolean,
     testing: Boolean = false,
     statusText: String,
@@ -160,16 +181,4 @@ private fun BackendProductTile(
             )
         }
     }
-}
-
-private fun List<AgentBackendConfig>.preferredOpenClawBackend(): AgentBackendConfig? {
-    val enabled = filter { it.enabled && (it.type == BackendType.OPENCLAW_GATEWAY || it.type == BackendType.OPENCLAW_HTTP) }
-    return enabled.firstOrNull { it.isPrimary }
-        ?: enabled.firstOrNull { it.type == BackendType.OPENCLAW_GATEWAY }
-        ?: enabled.firstOrNull()
-}
-
-private fun List<AgentBackendConfig>.preferredHermesBackend(): AgentBackendConfig? {
-    val enabled = filter { it.enabled && it.type == BackendType.HERMES_API_SERVER }
-    return enabled.firstOrNull { it.isPrimary } ?: enabled.firstOrNull()
 }

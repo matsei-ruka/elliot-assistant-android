@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-<string name="app_name">WakeHermesClaw</string>
+<string name="app_name">Elliot Assistant</string>
 <string name="notification_channel_name">喚醒詞服務</string>
 <string name="notification_channel_description">始終在線的語音檢測服務</string>
-<string name="notification_title">WakeHermesClaw</string>
+<string name="notification_title">Elliot Assistant</string>
 <string name="notification_content">說「%s」即可激活</string>
 <string name="default_session_title_format">語音會話 %s</string>
 <string name="chat_session_title_format">聊天 %s</string>
@@ -670,7 +670,6 @@
     <!-- WakeHermesClaw setup wizard -->
     <string name="av_setup_title">設定 WakeHermesClaw</string>
     <string name="av_setup_welcome_title">歡迎使用 WakeHermesClaw</string>
-    <string name="av_setup_welcome_body">支援 Hermes Agent 與 OpenClaw 的 Android 原生語音用戶端。在電腦上執行配對 helper，選擇是否包含 Hermes、OpenClaw 與 Tailscale，最後在本 App 內掃描一個 QR 即可完成。</string>
     <string name="av_setup_choose_title">使用哪些後端?</string>
     <string name="av_setup_choose_hint">至少選擇一個。稍後可從「設定 → Backends」新增。</string>
     <string name="av_setup_get_started">開始</string>

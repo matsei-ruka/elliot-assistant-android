@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">WakeHermesClaw</string>
+    <string name="app_name">Elliot Assistant</string>
     <string name="notification_channel_name">Wake Word Service</string>
     <string name="notification_channel_description">Always-on voice detection service</string>
-    <string name="notification_title">WakeHermesClaw</string>
+    <string name="notification_title">Elliot Assistant</string>
     <string name="agent_voice_subtitle">Voice client for OpenClaw and Hermes Agent</string>
     <string name="backends_title">Backends</string>
     <string name="backends_empty">No backends configured yet</string>
@@ -91,7 +91,7 @@
     <!-- WakeHermesClaw setup wizard -->
     <string name="av_setup_title">Set up WakeHermesClaw</string>
     <string name="av_setup_welcome_title">Welcome to WakeHermesClaw</string>
-    <string name="av_setup_welcome_body">A native Android voice client for Hermes Agent and OpenClaw. Run the pairing helper on your computer, answer whether to include Hermes Agent, OpenClaw, and Tailscale, then scan one QR in this app.</string>
+    <string name="av_setup_welcome_body">Connect this assistant to your agent. Telegram Bridge is the default; Hermes and Gateway pairing are available as advanced options.</string>
     <string name="av_setup_choose_title">Which backends will you use?</string>
     <string name="av_setup_choose_hint">Tick at least one. You can add more later in Settings → Backends.</string>
     <string name="av_setup_choose_recommended">Recommended: set up both now. You can switch Primary later.</string>

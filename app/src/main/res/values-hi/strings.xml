@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-<string name="app_name">WakeHermesClaw</string>
+<string name="app_name">Elliot Assistant</string>
 <string name="notification_channel_name">जागो वर्ड सर्विस</string>
 <string name="notification_channel_description">हमेशा चालू रहने वाली ध्वनि पहचान सेवा</string>
-<string name="notification_title">WakeHermesClaw</string>
+<string name="notification_title">Elliot Assistant</string>
 <string name="notification_content">सक्रिय करने के लिए \"%s\" कहें</string>
 <string name="default_session_title_format">ध्वनि सत्र %s</string>
 <string name="chat_session_title_format">चैट %s</string>
@@ -671,7 +671,6 @@
     <!-- WakeHermesClaw setup wizard -->
     <string name="av_setup_title">WakeHermesClaw सेट करें</string>
     <string name="av_setup_welcome_title">WakeHermesClaw में आपका स्वागत है</string>
-    <string name="av_setup_welcome_body">Hermes Agent और OpenClaw के लिए Android नेटिव वॉइस क्लाइंट। कंप्यूटर पर pairing helper चलाएँ, Hermes, OpenClaw और Tailscale को शामिल करना है या नहीं चुनें, फिर इस ऐप में एक QR स्कैन करें।</string>
     <string name="av_setup_choose_title">कौन-कौन से बैकएंड उपयोग करेंगे?</string>
     <string name="av_setup_choose_hint">कम से कम एक चुनें। बाद में «सेटिंग्स → Backends» से और जोड़ सकते हैं।</string>
     <string name="av_setup_get_started">शुरू करें</string>
