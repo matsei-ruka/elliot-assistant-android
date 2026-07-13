@@ -42,6 +42,9 @@ object LocationGetCapability : BridgeCapability {
     override val requiresPermissions = listOf(Manifest.permission.ACCESS_COARSE_LOCATION)
     override fun isAvailable(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    // Location permissions are not declared in the CTB manifest (Spec 001 §C):
+    // isAvailable() is always false and the SecurityException path is dead.
+    @android.annotation.SuppressLint("MissingPermission")
     override suspend fun execute(context: Context, arguments: JsonObject): JsonObject {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
         val loc = try {

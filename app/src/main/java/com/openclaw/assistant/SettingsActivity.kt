@@ -48,7 +48,6 @@ import com.openclaw.assistant.backend.BackendRepository
 import com.openclaw.assistant.backend.BackendType
 
 import com.openclaw.assistant.data.SettingsRepository
-import com.openclaw.assistant.service.NodeForegroundService
 import com.openclaw.assistant.service.HotwordService
 import com.openclaw.assistant.ui.components.CollapsibleSection
 import com.openclaw.assistant.ui.components.CredentialHintCard
@@ -58,7 +57,6 @@ import com.openclaw.assistant.ui.components.StatusIndicator
 import com.openclaw.assistant.gateway.AgentInfo
 import com.openclaw.assistant.ui.backend.BackendListActivity
 import com.openclaw.assistant.ui.backend.ToolProgressFeed
-import com.openclaw.assistant.ui.bridge.MobileBridgeSettingsScreen
 import com.openclaw.assistant.ui.theme.OpenClawAssistantTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.openclaw.assistant.utils.GatewayConfigUtils
@@ -329,7 +327,6 @@ fun SettingsScreen(
 
     val nodeConnected by runtime.isConnected.collectAsState()
     val nodeStatus by runtime.statusText.collectAsState()
-    val nodeForeground by runtime.isForeground.collectAsState()
     val backendRepository = remember(context.applicationContext) {
         BackendRepository.getInstance(context.applicationContext)
     }
@@ -361,9 +358,11 @@ fun SettingsScreen(
     // True when the applied setup code had only bootstrapToken (no password/token in QR)
     var setupCodeHasBootstrapOnly by rememberSaveable { mutableStateOf(false) }
 
-    // HTTP inputs
+    // HTTP inputs. The CTB token is never loaded back into the UI after
+    // entry (Spec 001): the field starts blank and blank means "keep the
+    // stored token".
     var httpInputUrl by rememberSaveable { mutableStateOf(httpUrl) }
-    var httpToken by rememberSaveable { mutableStateOf(authToken) }
+    var httpToken by rememberSaveable { mutableStateOf("") }
 
     // Update local state if runtime state changes behind the scenes
     LaunchedEffect(manualHostState, manualPortState, manualTlsState, gatewayTokenState) {
@@ -372,9 +371,8 @@ fun SettingsScreen(
         gatewayTls = manualTlsState
         gatewayToken = gatewayTokenState
     }
-    LaunchedEffect(httpUrl, authToken) {
+    LaunchedEffect(httpUrl) {
         httpInputUrl = httpUrl
-        httpToken = authToken
     }
 
     LaunchedEffect(Unit) {
@@ -486,13 +484,22 @@ fun SettingsScreen(
                                     runtime.setGatewayPassword("")
                                 }
 
-                                // Save HTTP Settings
-                                if (httpInputUrl.trim().isNotBlank() && !com.openclaw.assistant.shared.utils.NetworkUtils.isUrlSecure(httpInputUrl.trim())) {
-                                    testResult = TestResult(success = false, message = "Insecure URL: Only HTTPS or local HTTP allowed.")
+                                // Save HTTP Settings. The CTB endpoint is stored
+                                // exactly as entered: an HTTPS URL ending in
+                                // /v1/chat/completions, or a configuration error
+                                // (Spec 001 §B.5) — never rewritten or guessed.
+                                if (httpInputUrl.trim().isNotBlank() &&
+                                    com.openclaw.assistant.api.CtbHttpConfig.validateEndpoint(httpInputUrl.trim()) == null
+                                ) {
+                                    testResult = TestResult(success = false, message = context.getString(R.string.ctb_endpoint_invalid))
                                 } else {
                                     settings.httpUrl = httpInputUrl.trim()
                                 }
-                                settings.authToken = httpToken.trim()
+                                // Blank means "keep the stored token".
+                                if (httpToken.isNotBlank()) {
+                                    settings.authToken = httpToken.trim()
+                                    httpToken = ""
+                                }
 
                                 settings.defaultAgentId = defaultAgentId
                                 settings.ttsEnabled = ttsEnabled
@@ -874,20 +881,20 @@ fun SettingsScreen(
 
                             Spacer(modifier = Modifier.height(8.dp))
 
+                            // CTB token: write-only. It is stored encrypted and
+                            // never displayed after entry (Spec 001); leave the
+                            // field blank to keep the saved token.
                             OutlinedTextField(
                                 value = httpToken,
                                 onValueChange = { httpToken = it.trim(); testResult = null },
                                 label = { Text(stringResource(R.string.auth_token_label)) },
-                                leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
-                                trailingIcon = {
-                                    IconButton(onClick = { showNodeToken = !showNodeToken }) {
-                                        Icon(
-                                            if (showNodeToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                            contentDescription = stringResource(if (showNodeToken) R.string.action_hide_token else R.string.action_show_token)
-                                        )
+                                placeholder = {
+                                    if (settings.authToken.isNotBlank()) {
+                                        Text(stringResource(R.string.ctb_token_saved_hint))
                                     }
                                 },
-                                visualTransformation = if (showNodeToken) VisualTransformation.None else PasswordVisualTransformation(),
+                                leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+                                visualTransformation = PasswordVisualTransformation(),
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
@@ -896,30 +903,9 @@ fun SettingsScreen(
 
                         Spacer(modifier = Modifier.height(24.dp))
 
-                        
-                        // Gateway Specific Settings
-                        if (backendSettingsTabIndex == 1 && openClawTabIndex == 0) {
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            // Foreground Service Toggle
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(stringResource(R.string.gateway_foreground_service), style = MaterialTheme.typography.bodyLarge)
-                                    Text(stringResource(R.string.gateway_foreground_desc), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                                }
-                                Switch(
-                                    checked = nodeForeground,
-                                    onCheckedChange = { enabled ->
-                                        runtime.setForeground(enabled)
-                                        if (enabled) NodeForegroundService.start(context) else NodeForegroundService.stop(context)
-                                    }
-                                )
-                            }
-                        }
+                        // The NodeForegroundService toggle is removed in the CTB
+                        // build: the service and its dataSync foreground type are
+                        // outside the Spec 001 §C permission baseline.
 
                         // HTTP Specific Settings
                         if (backendSettingsTabIndex == 1 && openClawTabIndex == 1) {
@@ -1023,27 +1009,32 @@ fun SettingsScreen(
 
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            // Test Connection Button
+                            // Test Connection Button. CTB verification is a
+                            // GET /healthz on the endpoint origin — never a POST
+                            // to the chat endpoint, which would create a real
+                            // Telegram message (Spec 001 §B.5). The URL is used
+                            // as entered; an invalid one is a config error.
                             Button(
                                 onClick = {
                                     if (httpInputUrl.isBlank()) return@Button
-                                    if (!com.openclaw.assistant.shared.utils.NetworkUtils.isUrlSecure(httpInputUrl.trim())) {
-                                        testResult = TestResult(success = false, message = "Insecure URL: Only HTTPS or local HTTP allowed.")
+                                    if (com.openclaw.assistant.api.CtbHttpConfig.validateEndpoint(httpInputUrl.trim()) == null) {
+                                        testResult = TestResult(success = false, message = context.getString(R.string.ctb_endpoint_invalid))
                                         return@Button
                                     }
                                     scope.launch {
                                         try {
                                             isTesting = true
                                             testResult = null
-                                            val testUrl = httpInputUrl.trimEnd('/').let { url ->
-                                                if (url.contains("/v1/")) url else "$url/v1/chat/completions"
-                                            }
-                                            val result = apiClient.testConnection(testUrl, httpToken.trim())
+                                            val tokenForTest = httpToken.trim().ifBlank { settings.authToken }
+                                            val result = apiClient.testConnection(httpInputUrl.trim(), tokenForTest)
                                             result.fold(
                                                 onSuccess = {
                                                     testResult = TestResult(success = true, message = context.getString(R.string.connected))
                                                     settings.httpUrl = httpInputUrl.trim()
-                                                    settings.authToken = httpToken.trim()
+                                                    if (httpToken.isNotBlank()) {
+                                                        settings.authToken = httpToken.trim()
+                                                        httpToken = ""
+                                                    }
                                                     settings.isVerified = true
                                                 },
                                                 onFailure = {
@@ -1472,10 +1463,9 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(24.dp))
             }
 
-            if (selectedSettingsCategory == SettingsCategory.MobileBridge) {
-                MobileBridgeSettingsScreen(embedded = true)
-                Spacer(modifier = Modifier.height(24.dp))
-            }
+            // The Mobile Bridge settings screen is removed in the CTB build:
+            // MobileBridgeService and the accessibility bridge are outside the
+            // Spec 001 §C surface.
 
             // === WAKE WORD SECTION ===
             if (selectedSettingsCategory == SettingsCategory.WakeWord) {
@@ -1936,12 +1926,6 @@ private fun SettingsOverviewMenu(
             subtitle = stringResource(R.string.settings_category_voice_desc),
             icon = Icons.Default.GraphicEq,
             onClick = { onSelected(SettingsCategory.Voice) },
-        ),
-        SettingsOverviewItem(
-            title = stringResource(R.string.settings_category_mobile_bridge),
-            subtitle = stringResource(R.string.settings_category_mobile_bridge_desc),
-            icon = Icons.Default.Security,
-            onClick = { onSelected(SettingsCategory.MobileBridge) },
         ),
         SettingsOverviewItem(
             title = stringResource(R.string.diagnostics_title),

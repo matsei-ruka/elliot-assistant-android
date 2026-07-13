@@ -79,7 +79,9 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
     var type by remember { mutableStateOf(existing?.type ?: BackendType.HERMES_API_SERVER) }
     var displayName by remember { mutableStateOf(existing?.displayName ?: defaultName(type)) }
     var baseUrl by remember { mutableStateOf(existing?.baseUrl.orEmpty()) }
-    var token by remember { mutableStateOf(existing?.apiKeyOrToken.orEmpty()) }
+    // Tokens are write-only (Spec 001): never loaded back into the UI after
+    // entry. A blank field keeps the stored token.
+    var token by remember { mutableStateOf("") }
     var host by remember { mutableStateOf(existing?.host.orEmpty()) }
     var port by remember { mutableStateOf(existing?.port?.toString().orEmpty()) }
     var useTls by remember { mutableStateOf(existing?.useTls ?: true) }
@@ -192,7 +194,7 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                     Spacer(Modifier.height(4.dp))
                     OutlinedTextField(value = publicUrl, onValueChange = { publicUrl = it }, label = { Text(stringResource(R.string.backend_public_url)) }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.av_import_api_key)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.av_import_api_key)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(value = modelName, onValueChange = { modelName = it }, label = { Text(androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.av_import_model)) }, modifier = Modifier.fillMaxWidth())
                     Text(androidx.compose.ui.res.stringResource(com.openclaw.assistant.R.string.av_import_model_help), style = MaterialTheme.typography.bodySmall)
@@ -271,7 +273,7 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(value = port, onValueChange = { port = it.filter(Char::isDigit) }, label = { Text(stringResource(R.string.gateway_port)) }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.backend_openclaw_token)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.backend_openclaw_token)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Checkbox(checked = useTls, onCheckedChange = { useTls = it }); Text(stringResource(R.string.backend_use_tls))
                     }
@@ -284,7 +286,7 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                 BackendType.OPENCLAW_HTTP -> {
                     OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text(stringResource(R.string.backend_base_url)) }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.auth_token_label)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.auth_token_label)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 }
             }
 
@@ -341,7 +343,7 @@ private fun buildConfig(
         displayName = displayName.ifBlank { defaultName(type) },
         type = type,
         baseUrl = baseUrl.ifBlank { null },
-        apiKeyOrToken = token.ifBlank { null },
+        apiKeyOrToken = token.ifBlank { existing?.apiKeyOrToken },
         host = host.ifBlank { null },
         port = port.toIntOrNull(),
         useTls = useTls,

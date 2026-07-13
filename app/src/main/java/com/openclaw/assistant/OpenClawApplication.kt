@@ -4,8 +4,6 @@ import android.app.Application
 import android.util.Log
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
-import com.google.firebase.FirebaseApp
-import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.openclaw.assistant.backend.BackendMigration
 import com.openclaw.assistant.backend.AgentDiagnostics
 import com.openclaw.assistant.bridge.BridgeActivityLog
@@ -44,12 +42,6 @@ class OpenClawApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         applySavedAppLocale()
-        // In debug builds, FirebaseInitProvider is removed from the manifest so that fork PRs
-        // (which lack a real API key) do not crash on launch. Initialize Firebase manually here
-        // when the build flag indicates a real key is present.
-        if (BuildConfig.DEBUG && BuildConfig.FIREBASE_ENABLED) {
-            FirebaseApp.initializeApp(this)
-        }
         // Register Bouncy Castle as highest-priority provider for Ed25519 support
         try {
             val bcProvider = Class.forName("org.bouncycastle.jce.provider.BouncyCastleProvider")
@@ -58,9 +50,6 @@ class OpenClawApplication : Application() {
             Security.insertProviderAt(bcProvider, 1)
         } catch (e: Throwable) {
             Log.e("OpenClawApp", "Failed to register Bouncy Castle provider", e)
-            if (BuildConfig.FIREBASE_ENABLED) {
-                FirebaseCrashlytics.getInstance().recordException(e)
-            }
         }
 
         // One-shot migration of legacy OpenClaw single-backend settings into the

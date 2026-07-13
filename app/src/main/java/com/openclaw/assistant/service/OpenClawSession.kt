@@ -8,8 +8,6 @@ import android.service.voice.VoiceInteractionSession
 import android.speech.SpeechRecognizer
 import android.util.Log
 import android.view.LayoutInflater
-import com.openclaw.assistant.BuildConfig
-import com.google.firebase.crashlytics.FirebaseCrashlytics
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -53,6 +51,7 @@ import com.openclaw.assistant.speech.TTSUtils
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
+import kotlin.coroutines.coroutineContext
 import java.util.concurrent.atomic.AtomicBoolean
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
@@ -283,9 +282,6 @@ class OpenClawSession(
                     currentSessionId?.let { settings.sessionId = it }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to handle session", e)
-                    if (BuildConfig.FIREBASE_ENABLED) {
-                        FirebaseCrashlytics.getInstance().recordException(e)
-                    }
                 }
             }
         }
@@ -401,6 +397,7 @@ class OpenClawSession(
 
     private var listeningJob: Job? = null
     private var speakingJob: Job? = null
+    private var sendJob: Job? = null
     private var isUserDismissed = false
 
     private fun startListening(initialDelayMs: Long = 50L) {
@@ -555,6 +552,20 @@ class OpenClawSession(
         thinkingSoundJob = null
     }
 
+    /**
+     * Common failure path for the assistant request: stops the thinking and
+     * filler sounds and releases audio focus so no resource outlives the
+     * error (Spec 001 §D).
+     */
+    private fun failRequest(message: String?) {
+        cancelInitialFillerPhrase()
+        cancelWaitPhraseTimer()
+        stopThinkingSound()
+        abandonAudioFocus()
+        currentState.value = AssistantState.ERROR
+        errorMessage.value = message ?: context.getString(R.string.error_network)
+    }
+
     private fun sendToOpenClaw(message: String) {
         Log.d(TAG, "sendToOpenClaw() called, transitioning to THINKING")
         currentState.value = AssistantState.THINKING
@@ -567,15 +578,13 @@ class OpenClawSession(
             scheduleInitialFillerPhrase()
         }
 
-        scope.launch {
+        // Only one assistant request may be in flight (Spec 001 §D).
+        sendJob?.cancel()
+        sendJob = scope.launch {
             val agentId = settings.defaultAgentId.takeIf { it.isNotBlank() && it != "main" }
             val voiceBackendId = resolveVoiceSessionBackendId()
             if (!isOpenClawVoiceTarget() && voiceBackendId == null) {
-                cancelInitialFillerPhrase()
-                cancelWaitPhraseTimer()
-                stopThinkingSound()
-                currentState.value = AssistantState.ERROR
-                errorMessage.value = context.getString(R.string.av_settings_no_hermes)
+                failRequest(context.getString(R.string.av_settings_no_hermes))
                 return@launch
             }
             val primaryReply = try {
@@ -584,18 +593,16 @@ class OpenClawSession(
                         context = context,
                         userText = message,
                         backendId = voiceBackendId,
-                        sessionId = settings.sessionId,
+                        sessionId = settings.installUserId,
                         agentId = agentId,
                     )
                 } else {
                     null
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                cancelInitialFillerPhrase()
-                cancelWaitPhraseTimer()
-                stopThinkingSound()
-                currentState.value = AssistantState.ERROR
-                errorMessage.value = e.message ?: context.getString(R.string.error_network)
+                failRequest(e.message)
                 return@launch
             }
             if (primaryReply != null) {
@@ -604,20 +611,13 @@ class OpenClawSession(
                     displayText.value = text
                     handleResponseReceived(text)
                 } else {
-                    cancelInitialFillerPhrase()
-                    stopThinkingSound()
-                    currentState.value = AssistantState.ERROR
-                    errorMessage.value = context.getString(R.string.error_no_response)
+                    failRequest(context.getString(R.string.error_no_response))
                 }
                 return@launch
             }
 
             if (!isOpenClawVoiceTarget()) {
-                cancelInitialFillerPhrase()
-                cancelWaitPhraseTimer()
-                stopThinkingSound()
-                currentState.value = AssistantState.ERROR
-                errorMessage.value = context.getString(R.string.av_settings_no_hermes)
+                failRequest(context.getString(R.string.av_settings_no_hermes))
                 return@launch
             }
 
@@ -751,10 +751,7 @@ class OpenClawSession(
     private suspend fun sendViaGateway(message: String) {
         val nodeRuntime = (context.applicationContext as OpenClawApplication).nodeRuntime
         if (!nodeRuntime.chatHealthOk.value) {
-            cancelInitialFillerPhrase()
-            stopThinkingSound()
-            currentState.value = AssistantState.ERROR
-            errorMessage.value = context.getString(R.string.error_gateway_not_connected)
+            failRequest(context.getString(R.string.error_gateway_not_connected))
             return
         }
 
@@ -787,18 +784,13 @@ class OpenClawSession(
                 displayText.value = responseText
                 handleResponseReceived(responseText)
             } else {
-                cancelInitialFillerPhrase()
-                stopThinkingSound()
-                currentState.value = AssistantState.ERROR
-                errorMessage.value = context.getString(R.string.error_no_response)
+                failRequest(context.getString(R.string.error_no_response))
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Gateway error", e)
-            cancelInitialFillerPhrase()
-            cancelWaitPhraseTimer()
-            stopThinkingSound()
-            currentState.value = AssistantState.ERROR
-            errorMessage.value = e.message ?: context.getString(R.string.error_network)
+            failRequest(e.message)
         }
     }
 
@@ -813,13 +805,13 @@ class OpenClawSession(
             com.openclaw.assistant.backend.PrimaryBackendDispatcher.sendPrimary(
                 context = context,
                 userText = message,
-                sessionId = settings.sessionId,
+                sessionId = settings.installUserId,
                 agentId = agentId,
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
-            cancelWaitPhraseTimer(); cancelInitialFillerPhrase(); stopThinkingSound()
-            currentState.value = AssistantState.ERROR
-            errorMessage.value = e.message ?: context.getString(R.string.error_network)
+            failRequest(e.message)
             return
         }
         if (primaryReply != null) {
@@ -829,17 +821,17 @@ class OpenClawSession(
                 displayText.value = text
                 handleResponseReceived(text)
             } else {
-                cancelInitialFillerPhrase(); stopThinkingSound()
-                currentState.value = AssistantState.ERROR
-                errorMessage.value = context.getString(R.string.error_no_response)
+                failRequest(context.getString(R.string.error_no_response))
             }
             return
         }
 
+        // The configured endpoint is used as-is; OpenClawClient rejects
+        // anything that is not a valid CTB completion URL (Spec 001 §B.5).
         val result = apiClient.sendMessage(
-            httpUrl = settings.getChatCompletionsUrl(),
+            httpUrl = settings.httpUrl,
             message = message,
-            sessionId = settings.sessionId,
+            sessionId = settings.installUserId,
             authToken = settings.authToken.takeIf { it.isNotBlank() },
             agentId = agentId,
             modelName = resolveLegacyOpenClawModel(),
@@ -854,28 +846,24 @@ class OpenClawSession(
                     displayText.value = responseText
                     handleResponseReceived(responseText)
                 } else if (response.error != null) {
-                    cancelInitialFillerPhrase()
-                    stopThinkingSound()
-                    currentState.value = AssistantState.ERROR
-                    errorMessage.value = response.error
+                    failRequest(response.error)
                 } else {
-                    cancelInitialFillerPhrase()
-                    stopThinkingSound()
-                    currentState.value = AssistantState.ERROR
-                    errorMessage.value = context.getString(R.string.error_no_response)
+                    failRequest(context.getString(R.string.error_no_response))
                 }
             },
             onFailure = { error ->
                 Log.e(TAG, "API error", error)
-                cancelInitialFillerPhrase()
-                stopThinkingSound()
-                currentState.value = AssistantState.ERROR
-                errorMessage.value = error.message ?: context.getString(R.string.error_network)
+                failRequest(error.message)
             }
         )
     }
 
     private suspend fun handleResponseReceived(responseText: String) {
+        // A cancelled request must never start TTS when the late HTTP
+        // response arrives (Spec 001 §D). Everything here runs on the main
+        // dispatcher, so this check cannot race with interruptAndListen().
+        coroutineContext.ensureActive()
+
         cancelInitialFillerPhrase()
         cancelWaitPhraseTimer()
         stopAuxiliarySpeech()
@@ -908,6 +896,10 @@ class OpenClawSession(
         stopThinkingSound()
         stopAuxiliarySpeech()
         listeningJob?.cancel()
+        // Abort the in-flight HTTP request so a late reply is never spoken
+        // and the OkHttp call is really cancelled (Spec 001 §B.2/§D).
+        sendJob?.cancel()
+        sendJob = null
         sendPauseBroadcast()
         ignoreNextTtsStop = true
         ttsManager.stop()
@@ -1166,7 +1158,12 @@ fun AssistantUI(
                 modifier = Modifier
                     .size(140.dp)
                     .then(
-                        if (state == AssistantState.SPEAKING || state == AssistantState.PREPARING_SPEECH) {
+                        if (state == AssistantState.SPEAKING ||
+                            state == AssistantState.PREPARING_SPEECH ||
+                            state == AssistantState.THINKING
+                        ) {
+                            // THINKING included so the user can cancel the
+                            // request during the full 320-second CTB wait.
                             Modifier.clickable(
                                 onClickLabel = stringResource(R.string.interrupt_description),
                                 role = Role.Button

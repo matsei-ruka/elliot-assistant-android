@@ -7,8 +7,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("kotlin-kapt")
     id("org.jetbrains.kotlin.plugin.serialization")
-    id("com.google.gms.google-services")
-    id("com.google.firebase.crashlytics")
 }
 
 // Load local.properties
@@ -83,10 +81,6 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             isMinifyEnabled = false
-            // CI sets FIREBASE_ENABLED=false for fork PRs so the APK launches without a real API key.
-            // Defaults to true for local development.
-            val firebaseEnabled = System.getenv("FIREBASE_ENABLED")?.toBooleanStrictOrNull() ?: true
-            buildConfigField("boolean", "FIREBASE_ENABLED", firebaseEnabled.toString())
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -94,7 +88,6 @@ android {
         }
         release {
             isMinifyEnabled = true
-            buildConfigField("boolean", "FIREBASE_ENABLED", "true")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -147,6 +140,9 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // Let android.util.Log no-op in plain JVM unit tests (CTB client
+        // redacted-logging tests run without Robolectric).
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -257,9 +253,9 @@ dependencies {
     implementation("androidx.room:room-ktx:$roomVersion")
     kapt("androidx.room:room-compiler:$roomVersion")
 
-    // Firebase
-    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
-    implementation("com.google.firebase:firebase-crashlytics")
+    // Firebase Crashlytics/analytics removed for the CTB build (Spec 001 §C):
+    // a voice assistant must not export prompts, replies, endpoint details,
+    // or device identifiers to a third-party telemetry provider.
 
     // QR Code Scanning (Google Code Scanner — no camera permission required)
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")

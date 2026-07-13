@@ -23,7 +23,6 @@ import androidx.core.content.ContextCompat
 import com.openclaw.assistant.MainActivity
 import com.openclaw.assistant.R
 import com.openclaw.assistant.BuildConfig
-import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.openclaw.assistant.data.SettingsRepository
 import kotlinx.coroutines.*
 import org.vosk.Model
@@ -146,9 +145,6 @@ class HotwordService : Service(), VoskRecognitionListener {
             if (isVoskCrash) {
                 Log.e(TAG, "Caught uncaught Vosk exception on thread ${thread.name}", throwable)
                 if (throwable is UnsatisfiedLinkError || throwable.cause is UnsatisfiedLinkError) {
-                    if (BuildConfig.FIREBASE_ENABLED) {
-                        FirebaseCrashlytics.getInstance().recordException(throwable)
-                    }
                     getSharedPreferences("hotword_prefs", Context.MODE_PRIVATE)
                         .edit().putBoolean("vosk_unsupported", true).apply()
                     // Don't resume - device doesn't support Vosk
@@ -162,9 +158,6 @@ class HotwordService : Service(), VoskRecognitionListener {
                         }
                     }
                 } else {
-                    if (BuildConfig.FIREBASE_ENABLED) {
-                        FirebaseCrashlytics.getInstance().recordException(throwable)
-                    }
                     speechService = null
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         if (!isSessionActive) {
@@ -369,13 +362,6 @@ class HotwordService : Service(), VoskRecognitionListener {
             } catch (e: UnsatisfiedLinkError) {
                 Log.e(TAG, "Vosk native library not supported on this device", e)
                 debugLog("Vosk: UnsatisfiedLinkError — native lib not supported")
-                if (BuildConfig.FIREBASE_ENABLED) {
-                    FirebaseCrashlytics.getInstance().apply {
-                        setCustomKey("audio_retry_count", audioRetryCount)
-                        setCustomKey("is_session_active", isSessionActive)
-                        recordException(e)
-                    }
-                }
                 prefs.edit()
                     .putBoolean("vosk_unsupported", true)
                     .putInt("vosk_unsupported_version", currentVersion)
@@ -383,13 +369,6 @@ class HotwordService : Service(), VoskRecognitionListener {
             } catch (e: Exception) {
                 Log.e(TAG, "Init error", e)
                 debugLog("Vosk: init error — ${e.message}")
-                if (BuildConfig.FIREBASE_ENABLED) {
-                    FirebaseCrashlytics.getInstance().apply {
-                        setCustomKey("audio_retry_count", audioRetryCount)
-                        setCustomKey("is_session_active", isSessionActive)
-                        recordException(e)
-                    }
-                }
             }
         }
     }
@@ -549,11 +528,6 @@ class HotwordService : Service(), VoskRecognitionListener {
             debugLog("Mic unavailable after $MAX_AUDIO_RETRIES retries — giving up")
             audioRetryCount = 0
             showMicUnavailableNotification()
-            if (BuildConfig.FIREBASE_ENABLED) {
-                FirebaseCrashlytics.getInstance().recordException(
-                    RuntimeException("Microphone unavailable after $MAX_AUDIO_RETRIES retries")
-                )
-            }
             return
         }
         audioRetryCount++

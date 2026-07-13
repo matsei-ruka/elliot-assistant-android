@@ -1,23 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <activity
             android:name="com.openclaw.assistant.debug.HermesLiveProbeActivity"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-
-        <!--
-            Remove FirebaseInitProvider from debug builds so that Firebase is not
-            initialized automatically. OpenClawApplication initializes it manually
-            based on BuildConfig.FIREBASE_ENABLED, which CI sets to false for fork
-            PRs that do not have access to the DEBUG_GOOGLE_SERVICES_JSON secret.
-        -->
-        <provider
-            android:name="com.google.firebase.provider.FirebaseInitProvider"
-            android:authorities="${applicationId}.firebaseinitprovider"
-            android:exported="false"
-            android:directBootAware="true"
-            tools:node="remove" />
     </application>
 </manifest>

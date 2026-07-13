@@ -121,26 +121,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
+        // Only RECORD_AUDIO and POST_NOTIFICATIONS can be requested in the CTB
+        // build; the device-control permissions are not declared (Spec 001 §C).
         val recordAudioGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
-        val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
-        val coarseGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
-        val fineGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
-        val smsGranted = (permissions[Manifest.permission.SEND_SMS] ?: false) || (permissions[Manifest.permission.READ_SMS] ?: false)
-
-        // Auto-enable capabilities when permission is newly granted
-        val runtime = (applicationContext as OpenClawApplication).nodeRuntime
-        if (cameraGranted) {
-            runtime.setCameraEnabled(true)
-        }
-        if (smsGranted) {
-            runtime.setSmsEnabled(true)
-        }
-        if (coarseGranted) {
-            runtime.setLocationMode(com.openclaw.assistant.LocationMode.WhileUsing)
-            runtime.setLocationPreciseEnabled(fineGranted)
-        } else if (fineGranted) {
-            runtime.setLocationPreciseEnabled(true)
-        }
 
         if (pendingHotwordStart) {
             pendingHotwordStart = false
@@ -315,9 +298,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val list = mutableListOf<PermissionStatusInfo>()
         val recordAudioGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         list.add(PermissionStatusInfo(getString(R.string.permission_record_audio), recordAudioGranted && !isMicPrivacyBlocked()))
-        list.add(PermissionStatusInfo(getString(R.string.permission_camera), ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED))
-        list.add(PermissionStatusInfo(getString(R.string.permission_location_fine), ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED))
-        list.add(PermissionStatusInfo(getString(R.string.permission_location_coarse), ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             list.add(PermissionStatusInfo(getString(R.string.permission_notifications), ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED))
         }
@@ -771,119 +751,9 @@ fun MainScreen(
                 Spacer(modifier = Modifier.height(16.dp))
             }
 
-            // === CAPABILITIES CONTROLS ===
-            Text(
-                text = stringResource(R.string.permissions_for_agent_voice_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            val cameraEnabled by runtime.cameraEnabled.collectAsState()
-            val locationMode by runtime.locationMode.collectAsState()
-            val locationPrecise by runtime.locationPreciseEnabled.collectAsState()
-            
-            // === CAPABILITIES: all 4 in one row ===
-            val hasTelephony = remember { runtime.sms.hasTelephonyFeature() }
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Camera Toggle
-                CapabilityCard(
-                    icon = Icons.Default.PhotoCamera,
-                    label = stringResource(R.string.capability_camera),
-                    isActive = cameraEnabled,
-                    onClick = {
-                        if (!cameraEnabled) {
-                            val granted = ContextCompat.checkSelfPermission(
-                                context, Manifest.permission.CAMERA
-                            ) == PackageManager.PERMISSION_GRANTED
-                            if (granted) {
-                                runtime.setCameraEnabled(true)
-                            } else {
-                                onRequestPermissions(listOf(Manifest.permission.CAMERA))
-                            }
-                        } else {
-                            runtime.setCameraEnabled(false)
-                        }
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-
-                // Location Toggle (ON/OFF)
-                val locationStatusText = when {
-                    locationMode == LocationMode.Off -> stringResource(R.string.location_off)
-                    locationPrecise -> stringResource(R.string.location_precise)
-                    else -> stringResource(R.string.location_coarse)
-                }
-                CapabilityCard(
-                    icon = Icons.Default.LocationOn,
-                    label = stringResource(R.string.capability_location),
-                    isActive = locationMode != LocationMode.Off,
-                    statusText = locationStatusText,
-                    onClick = {
-                        if (locationMode == LocationMode.Off) {
-                            val coarseGranted = ContextCompat.checkSelfPermission(
-                                context, Manifest.permission.ACCESS_COARSE_LOCATION
-                            ) == PackageManager.PERMISSION_GRANTED
-                            val fineGranted = ContextCompat.checkSelfPermission(
-                                context, Manifest.permission.ACCESS_FINE_LOCATION
-                            ) == PackageManager.PERMISSION_GRANTED
-                            
-                            if (coarseGranted || fineGranted) {
-                                runtime.setLocationMode(LocationMode.WhileUsing)
-                                runtime.setLocationPreciseEnabled(fineGranted)
-                            } else {
-                                onRequestPermissions(listOf(
-                                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                                    Manifest.permission.ACCESS_FINE_LOCATION
-                                ))
-                            }
-                        } else {
-                            runtime.setLocationMode(LocationMode.Off)
-                        }
-                    },
-                    onInfoClick = { showLocationInfo = true },
-                    modifier = Modifier.weight(1f)
-                )
-
-                // SMS Toggle
-                if (hasTelephony) {
-                    CapabilityCard(
-                        icon = Icons.Default.Sms,
-                        label = stringResource(R.string.capability_sms),
-                        isActive = smsEnabled,
-                        onClick = {
-                            if (smsEnabled) {
-                                runtime.setSmsEnabled(false)
-                            } else {
-                                val granted = ContextCompat.checkSelfPermission(
-                                    context, Manifest.permission.SEND_SMS
-                                ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
-                                    context, Manifest.permission.READ_SMS
-                                ) == PackageManager.PERMISSION_GRANTED
-                                if (granted) {
-                                    runtime.setSmsEnabled(true)
-                                } else {
-                                    onRequestPermissions(listOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS))
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                // Screen Capture Toggle
-                CapabilityCard(
-                    icon = if (screenRecordActive) Icons.AutoMirrored.Filled.StopScreenShare else Icons.AutoMirrored.Filled.ScreenShare,
-                    label = stringResource(R.string.capability_screen),
-                    isActive = screenRecordActive,
-                    onClick = { showScreenCaptureDialog = true },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
+            // Device-control capability toggles (camera, location, SMS, screen
+            // capture) are removed in the CTB build: their permissions are not
+            // declared and no UI may reach them (Spec 001 §C).
 
             if (missingPermissions.isNotEmpty()) {
                 PermissionStatusCard(

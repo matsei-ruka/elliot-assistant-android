@@ -135,7 +135,9 @@ class SessionForegroundService : Service() {
             PowerManager.PARTIAL_WAKE_LOCK,
             "OpenClawAssistant::SessionFgWakeLock"
         ).apply {
-            acquire(5 * 60 * 1000L) // 5 min max
+            // Bounded lifetime: must outlast the 320-second CTB reply budget
+            // plus TTS playback; released in onDestroy on every terminal path.
+            acquire(10 * 60 * 1000L)
         }
         Log.d(TAG, "WakeLock acquired")
     }

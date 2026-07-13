@@ -1,35 +1,43 @@
 package com.openclaw.assistant.api
 
-import com.openclaw.assistant.BuildConfig
-import com.google.firebase.crashlytics.FirebaseCrashlytics
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.IOException
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
-import javax.net.ssl.X509TrustManager
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
- * Simple client - POSTs to the configured HTTP connection
+ * Simple client - POSTs to the configured HTTP connection.
+ *
+ * Hardened for the CTB text transport (Spec 001): 320-second read/call
+ * budget, explicit non-streaming requests, cancellable in-flight calls,
+ * `GET /healthz` connection verification and redacted logging.
  */
 class OpenClawClient() {
 
-    private val client: OkHttpClient = run {
-        val builder = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-        builder.build()
+    companion object {
+        private const val TAG = "CtbHttp"
     }
+
+    internal val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(CtbHttpConfig.CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(CtbHttpConfig.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(CtbHttpConfig.WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .callTimeout(CtbHttpConfig.CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .build()
 
     private val gson = Gson()
 
@@ -52,19 +60,24 @@ class OpenClawClient() {
             )
         }
 
-        val parsedUrl = try {
-            httpUrl.trim().toHttpUrl()
-        } catch (e: IllegalArgumentException) {
-            return@withContext Result.failure(
-                IllegalArgumentException("Invalid server URL: ${e.message}")
+        val parsedUrl = CtbHttpConfig.validateEndpoint(httpUrl)
+            ?: return@withContext Result.failure(
+                IllegalArgumentException(
+                    "Invalid endpoint: expected an HTTPS URL ending in " +
+                        CtbHttpConfig.COMPLETIONS_PATH
+                )
             )
-        }
+
+        val requestId = CtbLog.newRequestId()
+        val startedAt = System.currentTimeMillis()
 
         try {
             // OpenAI Chat Completions format for /v1/chat/completions
             val requestBody = JsonObject().apply {
                 addProperty("model", modelName?.trim()?.takeIf { it.isNotBlank() } ?: "openclaw")
                 addProperty("user", sessionId)
+                // CTB rejects streaming; always request a completed reply.
+                addProperty("stream", false)
                 val messagesArray = JsonArray()
                 val userMessage = JsonObject().apply {
                     addProperty("role", "user")
@@ -114,37 +127,59 @@ class OpenClawClient() {
 
             val request = requestBuilder.build()
 
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    val errorBody = response.message
-                    return@withContext Result.failure(
-                        IOException("HTTP ${response.code}: $errorBody")
-                    )
-                }
+            val reply = executeCancellable(client.newCall(request))
+            Log.i(
+                TAG,
+                CtbLog.requestLine(
+                    requestId = requestId,
+                    status = reply.code,
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    bodyLength = reply.body?.length?.toLong(),
+                )
+            )
 
-                val responseBody = response.body?.string()
-                if (responseBody.isNullOrBlank()) {
-                    return@withContext Result.failure(
-                        IOException("Empty response")
-                    )
-                }
-
-                // Extract response text from JSON
-                val text = extractResponseText(responseBody)
-                Result.success(OpenClawResponse(response = text ?: responseBody))
+            if (!reply.isSuccessful) {
+                return@withContext Result.failure(
+                    IOException("HTTP ${reply.code}: ${reply.message}")
+                )
             }
+
+            if (reply.body.isNullOrBlank()) {
+                return@withContext Result.failure(
+                    IOException("Empty response")
+                )
+            }
+
+            // Extract response text from JSON. An empty completion is a
+            // visible failure, never a successful TTS input (Spec 001 §B.4).
+            val text = extractResponseText(reply.body)
+            if (text.isNullOrBlank()) {
+                return@withContext Result.failure(
+                    IOException("Empty completion")
+                )
+            }
+            Result.success(OpenClawResponse(response = text))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (!isTransientNetworkError(e) && BuildConfig.FIREBASE_ENABLED) {
-                FirebaseCrashlytics.getInstance().recordException(e)
-            }
+            Log.w(
+                TAG,
+                CtbLog.requestLine(
+                    requestId = requestId,
+                    status = null,
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    bodyLength = null,
+                ) + " error=${e.javaClass.simpleName}"
+            )
             Result.failure(e)
         }
     }
 
     /**
-     * Test connection to the HTTP connection
+     * Verify the CTB connection with `GET /healthz` on the endpoint origin.
+     *
+     * Never POSTs to the chat endpoint: a generic "ping" fallback would create
+     * a real Telegram message (Spec 001 §B.5).
      */
     suspend fun testConnection(
         httpUrl: String,
@@ -156,80 +191,81 @@ class OpenClawClient() {
             )
         }
 
+        val parsedUrl = CtbHttpConfig.validateEndpoint(httpUrl)
+            ?: return@withContext Result.failure(
+                IllegalArgumentException(
+                    "Invalid endpoint: expected an HTTPS URL ending in " +
+                        CtbHttpConfig.COMPLETIONS_PATH
+                )
+            )
+
+        val requestId = CtbLog.newRequestId()
+        val startedAt = System.currentTimeMillis()
+
         try {
-            // Try a HEAD request first (lightweight)
-            var requestBuilder = Request.Builder()
-                .url(httpUrl)
-                .head()
+            val request = Request.Builder()
+                .url(CtbHttpConfig.healthUrl(parsedUrl))
+                .get()
+                .build()
 
-            if (!authToken.isNullOrBlank()) {
-                requestBuilder.addHeader("Authorization", "Bearer ${authToken.trim()}")
+            val reply = executeCancellable(client.newCall(request))
+            Log.i(
+                TAG,
+                CtbLog.requestLine(
+                    requestId = requestId,
+                    status = reply.code,
+                    elapsedMs = System.currentTimeMillis() - startedAt,
+                    bodyLength = reply.body?.length?.toLong(),
+                )
+            )
+            if (reply.isSuccessful) {
+                Result.success(true)
+            } else {
+                Result.failure(IOException("HTTP ${reply.code}: ${reply.message}"))
             }
-
-            var request = requestBuilder.build()
-            
-            try {
-                client.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) return@withContext Result.success(true)
-                    // If Method Not Allowed (405), try POST
-                    if (response.code == 405) {
-                         // Fallthrough to POST
-                    } else {
-                         return@withContext Result.failure(IOException("HTTP ${response.code}"))
-                    }
-                }
-            } catch (e: Exception) {
-                // Fallthrough to POST on error (some servers reject HEAD)
-            }
-
-            // Fallback: POST with minimal OpenAI format
-            val requestBody = JsonObject().apply {
-                addProperty("model", "openclaw")
-                addProperty("user", "connection-test")
-                val messagesArray = JsonArray()
-                val testMessage = JsonObject().apply {
-                    addProperty("role", "user")
-                    addProperty("content", "ping")
-                }
-                messagesArray.add(testMessage)
-                add("messages", messagesArray)
-            }
-            
-            val jsonBody = gson.toJson(requestBody)
-                .toRequestBody("application/json; charset=utf-8".toMediaType())
-
-            requestBuilder = Request.Builder()
-                .url(httpUrl)
-                .post(jsonBody)
-                .addHeader("Content-Type", "application/json")
-
-            if (!authToken.isNullOrBlank()) {
-                requestBuilder.addHeader("Authorization", "Bearer ${authToken.trim()}")
-            }
-
-            request = requestBuilder.build()
-            
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    Result.success(true)
-                } else {
-                    val errorBody = response.message
-                    Result.failure(IOException("HTTP ${response.code}: $errorBody"))
-                }
-            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    private fun isTransientNetworkError(e: Throwable): Boolean {
-        return e is java.net.SocketTimeoutException ||
-                e is java.net.SocketException ||
-                e is java.net.ConnectException ||
-                e is java.io.EOFException ||
-                e is java.net.UnknownHostException ||
-                (e.cause != null && isTransientNetworkError(e.cause!!))
+    private data class HttpReply(
+        val code: Int,
+        val message: String,
+        val body: String?,
+    ) {
+        val isSuccessful: Boolean get() = code in 200..299
     }
+
+    /**
+     * Executes the call so that coroutine cancellation aborts the underlying
+     * OkHttp call immediately, instead of leaving it blocked until timeout.
+     * The body is read inside the callback so a cancel also interrupts a
+     * response that is still streaming in.
+     */
+    private suspend fun executeCancellable(call: Call): HttpReply =
+        suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onResponse(call: Call, response: Response) {
+                    val reply = try {
+                        response.use {
+                            HttpReply(it.code, it.message, it.body?.string())
+                        }
+                    } catch (e: IOException) {
+                        if (!continuation.isCancelled) continuation.resumeWithException(e)
+                        return
+                    }
+                    continuation.resume(reply)
+                }
+
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isCancelled) return
+                    continuation.resumeWithException(e)
+                }
+            })
+        }
 
     /**
      * Extract response text from various JSON formats

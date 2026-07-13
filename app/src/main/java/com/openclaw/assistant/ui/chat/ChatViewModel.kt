@@ -630,7 +630,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val result = apiClient.sendMessage(
                     httpUrl = httpUrl,
                     message = text,
-                    sessionId = sessionId,
+                    // Stable per-install random ID as the OpenAI `user` field
+                    // (Spec 001): CTB continuity without a rotating session or
+                    // personal identifier.
+                    sessionId = settings.installUserId,
                     authToken = authToken,
                     agentId = effectiveAgentId,
                     modelName = resolveSelectedOpenClawModel(),
@@ -1213,7 +1216,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             context = ctx,
             userText = text,
             backendId = overrideId,
-            sessionId = sessionId,
+            // Only the HTTP (CTB) adapter consumes this, as the OpenAI `user`
+            // field: use the stable per-install ID, never a rotating session
+            // or personal identifier (Spec 001).
+            sessionId = settings.installUserId,
             agentId = agentId,
         )?.text
     }

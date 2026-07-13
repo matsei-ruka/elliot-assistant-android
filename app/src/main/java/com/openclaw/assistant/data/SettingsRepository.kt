@@ -51,6 +51,18 @@ class SettingsRepository(context: Context) {
         }
         set(value) = prefs.edit().putString(KEY_SESSION_ID, value).apply()
 
+    // Stable per-install random ID sent as the OpenAI `user` field. Unlike
+    // sessionId it never rotates, which permits CTB/Telegram conversation
+    // continuity without sending a device or personal identifier
+    // (Spec 001, implementation notes).
+    val installUserId: String
+        get() {
+            val existing = prefs.getString(KEY_INSTALL_USER_ID, null)
+            return existing ?: UUID.randomUUID().toString().also {
+                prefs.edit().putString(KEY_INSTALL_USER_ID, it).apply()
+            }
+        }
+
 
 
     // Hotword enabled
@@ -331,24 +343,13 @@ class SettingsRepository(context: Context) {
 
     /**
      * Get the chat completions URL.
-     * Supports both base URL (http://server) and full path (http://server/v1/chat/completions).
+     *
+     * The configured endpoint is used exactly as entered — the full HTTPS URL
+     * ending in /v1/chat/completions. No path is appended or guessed; an
+     * invalid value is rejected by the CTB client as a configuration error
+     * (Spec 001 §B.5).
      */
-    fun getChatCompletionsUrl(): String {
-        val url = httpUrl.trim().trimEnd('/')
-        if (url.isBlank()) return ""
-        return if (url.contains("/v1/")) url
-        else "$url/v1/chat/completions"
-    }
-
-    /**
-     * Get the base URL (without path) for WebSocket connections.
-     * Extracts base from full path URLs, or returns as-is for base URLs.
-     */
-    fun getBaseUrl(): String {
-        val url = httpUrl.trimEnd('/')
-        val idx = url.indexOf("/v1/")
-        return if (idx > 0) url.substring(0, idx) else url
-    }
+    fun getChatCompletionsUrl(): String = httpUrl.trim()
 
     // Check if configured
     fun isConfigured(): Boolean {
@@ -373,6 +374,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_HTTP_URL = "webhook_url"
         private const val KEY_AUTH_TOKEN = "auth_token"
         private const val KEY_SESSION_ID = "session_id"
+        private const val KEY_INSTALL_USER_ID = "install_user_id"
         private const val KEY_HOTWORD_ENABLED = "hotword_enabled"
         private const val KEY_WAKE_WORD_PRESET = "wake_word_preset"
         private const val KEY_CUSTOM_WAKE_WORD = "custom_wake_word"

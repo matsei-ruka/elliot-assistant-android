@@ -310,10 +310,12 @@
     <string name="settings_category_language_desc">Display language and speech recognition language</string>
     <string name="settings_category_support_desc">Issue reports, update checks, version, support links</string>
     <string name="settings_category_credits_desc">Licenses, attribution, and project support</string>
-    <string name="webhook_url_label">Server URL</string>
-    <string name="webhook_url_hint">https://your-server</string>
+    <string name="webhook_url_label">Completion endpoint URL</string>
+    <string name="webhook_url_hint">https://your-server/v1/chat/completions</string>
     <string name="auth_token_label">Auth Token (optional)</string>
     <string name="auth_token_hint">Optional</string>
+    <string name="ctb_token_saved_hint">Token saved — enter a new value to replace it</string>
+    <string name="ctb_endpoint_invalid">Invalid endpoint: enter the full HTTPS URL ending in /v1/chat/completions</string>
     <string name="session_id_label">Session ID</string>
     <string name="user_id_label">User ID</string>
     <string name="save_button">Save</string>

@@ -91,6 +91,9 @@ class LocationCaptureManager(private val context: Context) {
       )
     }
 
+  // Location permissions are not declared in the CTB manifest (Spec 001 §C):
+  // the runtime permission guard below always throws first.
+  @android.annotation.SuppressLint("MissingPermission")
   private fun bestLastKnown(
     manager: LocationManager,
     providers: List<String>,
@@ -113,6 +116,9 @@ class LocationCaptureManager(private val context: Context) {
     return freshest
   }
 
+  // Location permissions are not declared in the CTB manifest (Spec 001 §C):
+  // the runtime permission guard above this call always throws first.
+  @android.annotation.SuppressLint("MissingPermission")
   private suspend fun requestCurrent(
     manager: LocationManager,
     providers: List<String>,
