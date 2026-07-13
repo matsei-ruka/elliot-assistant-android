@@ -56,6 +56,11 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        // Deliberately restricted CTB fork (Spec 001 §C): all device/tool
+        // invokes are refused at the dispatcher before touching any handler.
+        // The upstream phone-control code stays source material only.
+        buildConfigField("boolean", "CTB_RESTRICTED", "true")
     }
 
     tasks.register("printVersion") {

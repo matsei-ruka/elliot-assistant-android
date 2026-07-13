@@ -1,5 +1,6 @@
 package com.openclaw.assistant.api
 
+import com.openclaw.assistant.BuildConfig
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
@@ -29,17 +30,23 @@ object CtbHttpConfig {
     /**
      * Validates a configured completion endpoint without rewriting it.
      *
-     * Accepted: an HTTPS URL whose path ends in [COMPLETIONS_PATH].
-     * Plain HTTP is allowed only for loopback hosts so the transport can be
-     * exercised against a local test server; every real endpoint must be HTTPS.
+     * Accepted: a public HTTPS URL whose path is exactly [COMPLETIONS_PATH],
+     * with no userinfo, query string, or fragment. Plain HTTP is allowed only
+     * for loopback hosts and only in debug builds, so the transport can be
+     * exercised against a local MockWebServer.
      *
      * Returns the parsed URL, or null when the endpoint is invalid — callers
      * must surface a configuration error instead of guessing (Spec 001 §B.5).
      */
-    fun validateEndpoint(raw: String): HttpUrl? {
+    fun validateEndpoint(
+        raw: String,
+        allowLoopbackHttp: Boolean = BuildConfig.DEBUG,
+    ): HttpUrl? {
         val url = raw.trim().toHttpUrlOrNull() ?: return null
-        if (!url.isHttps && !isLoopback(url.host)) return null
-        if (!url.encodedPath.endsWith(COMPLETIONS_PATH)) return null
+        if (!url.isHttps && !(allowLoopbackHttp && isLoopback(url.host))) return null
+        if (url.encodedPath != COMPLETIONS_PATH) return null
+        if (url.encodedUsername.isNotEmpty() || url.encodedPassword.isNotEmpty()) return null
+        if (url.query != null || url.fragment != null) return null
         return url
     }
 

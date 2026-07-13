@@ -21,6 +21,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -80,8 +81,10 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
     var displayName by remember { mutableStateOf(existing?.displayName ?: defaultName(type)) }
     var baseUrl by remember { mutableStateOf(existing?.baseUrl.orEmpty()) }
     // Tokens are write-only (Spec 001): never loaded back into the UI after
-    // entry. A blank field keeps the stored token.
+    // entry. A blank field keeps the stored token; the explicit clear action
+    // removes it.
     var token by remember { mutableStateOf("") }
+    var clearToken by remember { mutableStateOf(false) }
     var host by remember { mutableStateOf(existing?.host.orEmpty()) }
     var port by remember { mutableStateOf(existing?.port?.toString().orEmpty()) }
     var useTls by remember { mutableStateOf(existing?.useTls ?: true) }
@@ -157,6 +160,7 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                         displayName = displayName,
                         baseUrl = baseUrl,
                         token = token,
+                        clearToken = clearToken,
                         host = host,
                         port = port,
                         useTls = useTls,
@@ -201,7 +205,7 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = {
-                            val config = buildConfig(existing, type, displayName, baseUrl, token, host, port, useTls, modelName, useRunsApi, useStreaming, setPrimary, listOf(lanUrl, tailscaleUrl, publicUrl).filter { it.isNotBlank() }, agentContextName, agentContextDetail, preferredEndpointRole)
+                            val config = buildConfig(existing, type, displayName, baseUrl, token, clearToken, host, port, useTls, modelName, useRunsApi, useStreaming, setPrimary, listOf(lanUrl, tailscaleUrl, publicUrl).filter { it.isNotBlank() }, agentContextName, agentContextDetail, preferredEndpointRole)
                             scope.launch {
                                 status = loadingHermesModels
                                 runCatching { HermesConfigApi().fetchCatalog(config) }
@@ -221,7 +225,7 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                             Text(stringResource(R.string.backend_load_models))
                         }
                         OutlinedButton(onClick = {
-                            val config = buildConfig(existing, type, displayName, baseUrl, token, host, port, useTls, modelName, useRunsApi, useStreaming, setPrimary, listOf(lanUrl, tailscaleUrl, publicUrl).filter { it.isNotBlank() }, agentContextName, agentContextDetail, preferredEndpointRole)
+                            val config = buildConfig(existing, type, displayName, baseUrl, token, clearToken, host, port, useTls, modelName, useRunsApi, useStreaming, setPrimary, listOf(lanUrl, tailscaleUrl, publicUrl).filter { it.isNotBlank() }, agentContextName, agentContextDetail, preferredEndpointRole)
                             scope.launch {
                                 status = applyingHermesModel
                                 runCatching { HermesConfigApi().updateModel(config, modelName) }
@@ -286,7 +290,12 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
                 BackendType.OPENCLAW_HTTP -> {
                     OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text(stringResource(R.string.backend_base_url)) }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.auth_token_label)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text(stringResource(R.string.auth_token_label)) }, placeholder = { if (existing?.apiKeyOrToken?.isNotBlank() == true && !clearToken) Text(stringResource(R.string.ctb_token_saved_hint)) }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    if (existing?.apiKeyOrToken?.isNotBlank() == true && !clearToken) {
+                        TextButton(onClick = { clearToken = true; token = "" }) {
+                            Text(stringResource(R.string.ctb_clear_saved_token))
+                        }
+                    }
                 }
             }
 
@@ -299,14 +308,14 @@ fun BackendEditorScreen(existingId: String?, onDone: () -> Unit) {
             val secondary = listOf(lanUrl, tailscaleUrl, publicUrl).filter { it.isNotBlank() }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
-                    val config = buildConfig(existing, type, displayName, baseUrl, token, host, port, useTls, modelName, useRunsApi, useStreaming, setPrimary, secondary, agentContextName, agentContextDetail, preferredEndpointRole)
+                    val config = buildConfig(existing, type, displayName, baseUrl, token, clearToken, host, port, useTls, modelName, useRunsApi, useStreaming, setPrimary, secondary, agentContextName, agentContextDetail, preferredEndpointRole)
                     repo.upsert(config)
                     if (setPrimary) repo.setPrimary(config.id)
                     onDone()
                 }) { Text(stringResource(R.string.save)) }
 
                 Button(onClick = {
-                    val config = buildConfig(existing, type, displayName, baseUrl, token, host, port, useTls, modelName, useRunsApi, useStreaming, setPrimary, secondary, agentContextName, agentContextDetail, preferredEndpointRole)
+                    val config = buildConfig(existing, type, displayName, baseUrl, token, clearToken, host, port, useTls, modelName, useRunsApi, useStreaming, setPrimary, secondary, agentContextName, agentContextDetail, preferredEndpointRole)
                     scope.launch {
                         status = testingLabel
                         val r = withContext(Dispatchers.IO) { AgentClientFactory.create(config).testConnection() }
@@ -326,6 +335,7 @@ private fun buildConfig(
     displayName: String,
     baseUrl: String,
     token: String,
+    clearToken: Boolean,
     host: String,
     port: String,
     useTls: Boolean,
@@ -343,7 +353,7 @@ private fun buildConfig(
         displayName = displayName.ifBlank { defaultName(type) },
         type = type,
         baseUrl = baseUrl.ifBlank { null },
-        apiKeyOrToken = token.ifBlank { existing?.apiKeyOrToken },
+        apiKeyOrToken = token.ifBlank { if (clearToken) null else existing?.apiKeyOrToken },
         host = host.ifBlank { null },
         port = port.toIntOrNull(),
         useTls = useTls,

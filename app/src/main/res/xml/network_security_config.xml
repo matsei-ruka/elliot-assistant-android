@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Release baseline (Spec 001 follow-up): no cleartext traffic anywhere and
+     system trust anchors only. The debug source set overlays this file to
+     allow plain HTTP to loopback for MockWebServer-driven testing. -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-    <debug-overrides>
-        <trust-anchors>
-            <certificates src="user" />
-        </trust-anchors>
-    </debug-overrides>
 </network-security-config>

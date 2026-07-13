@@ -316,6 +316,17 @@
     <string name="auth_token_hint">Optional</string>
     <string name="ctb_token_saved_hint">Token saved — enter a new value to replace it</string>
     <string name="ctb_endpoint_invalid">Invalid endpoint: enter the full HTTPS URL ending in /v1/chat/completions</string>
+    <string name="setup_mode_ctb">Telegram Bridge</string>
+    <string name="setup_mode_hermes">Hermes</string>
+    <string name="setup_mode_gateway">Gateway QR</string>
+    <string name="ctb_setup_desc">Connect to your Completion Telegram Bridge. Enter the completion endpoint and your bearer token — the token is stored encrypted and never shown again.</string>
+    <string name="ctb_model_label">Model</string>
+    <string name="ctb_token_required">A token is required for a new bridge configuration</string>
+    <string name="ctb_verify_desc">Verify the bridge with GET /healthz on its origin. No message is sent to Telegram, and the token is only validated by your first real request.</string>
+    <string name="ctb_health_ok">Bridge healthy</string>
+    <string name="ctb_clear_saved_token">Clear saved token</string>
+    <string name="ctb_backend_display_name">Telegram Bridge (CTB)</string>
+    <string name="permission_summary_ctb_format">%1$d of %2$d permissions granted</string>
     <string name="session_id_label">Session ID</string>
     <string name="user_id_label">User ID</string>
     <string name="save_button">Save</string>

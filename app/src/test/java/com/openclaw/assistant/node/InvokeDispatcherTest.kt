@@ -1,21 +1,30 @@
 package com.openclaw.assistant.node
 
-import com.openclaw.assistant.gateway.GatewaySession
-import com.openclaw.assistant.protocol.OpenClawCameraCommand
-import com.openclaw.assistant.protocol.OpenClawNotificationsCommand
-import com.openclaw.assistant.protocol.OpenClawSystemCommand
-import com.openclaw.assistant.protocol.OpenClawPhotosCommand
-import com.openclaw.assistant.protocol.OpenClawContactsCommand
-import com.openclaw.assistant.protocol.OpenClawCalendarCommand
-import com.openclaw.assistant.protocol.OpenClawMotionCommand
 import com.openclaw.assistant.protocol.OpenClawBridgeCommand
-import io.mockk.coEvery
-import io.mockk.every
+import com.openclaw.assistant.protocol.OpenClawCalendarCommand
+import com.openclaw.assistant.protocol.OpenClawCameraCommand
+import com.openclaw.assistant.protocol.OpenClawClipboardCommand
+import com.openclaw.assistant.protocol.OpenClawContactsCommand
+import com.openclaw.assistant.protocol.OpenClawDeviceCommand
+import com.openclaw.assistant.protocol.OpenClawLocationCommand
+import com.openclaw.assistant.protocol.OpenClawMotionCommand
+import com.openclaw.assistant.protocol.OpenClawNotificationsCommand
+import com.openclaw.assistant.protocol.OpenClawPhotosCommand
+import com.openclaw.assistant.protocol.OpenClawScreenCommand
+import com.openclaw.assistant.protocol.OpenClawSmsCommand
+import com.openclaw.assistant.protocol.OpenClawSystemCommand
+import com.openclaw.assistant.protocol.OpenClawWifiCommand
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
+/**
+ * CTB-build contract (Spec 001 §C / CTB_RESTRICTED): every device/tool invoke
+ * is refused with the stable CAPABILITY_DISABLED error before any handler is
+ * touched. All handler mocks are strict — an unexpected handler call fails
+ * the test.
+ */
 class InvokeDispatcherTest {
   private val canvas = mockk<CanvasController>()
   private val cameraHandler = mockk<CameraHandler>()
@@ -68,126 +77,51 @@ class InvokeDispatcherTest {
     locationEnabled = { locationEnabled }
   )
 
+  private val privilegedCommands = listOf(
+    OpenClawCameraCommand.List.rawValue,
+    OpenClawCameraCommand.Snap.rawValue,
+    OpenClawScreenCommand.Record.rawValue,
+    OpenClawSmsCommand.Send.rawValue,
+    OpenClawSmsCommand.ReadLatest.rawValue,
+    OpenClawLocationCommand.Get.rawValue,
+    OpenClawNotificationsCommand.List.rawValue,
+    OpenClawSystemCommand.Notify.rawValue,
+    OpenClawSystemCommand.Brightness.rawValue,
+    OpenClawPhotosCommand.Latest.rawValue,
+    OpenClawContactsCommand.Search.rawValue,
+    OpenClawCalendarCommand.Events.rawValue,
+    OpenClawMotionCommand.Activity.rawValue,
+    OpenClawWifiCommand.List.rawValue,
+    OpenClawClipboardCommand.Read.rawValue,
+    OpenClawDeviceCommand.Status.rawValue,
+    OpenClawBridgeCommand.Execute.rawValue,
+    "app.update",
+    "debug.logs",
+  )
+
   @Test
-  fun `camera list is dispatched to handler`() = runTest {
+  fun `every device and tool invoke is refused with CAPABILITY_DISABLED`() = runTest {
     val dispatcher = createDispatcher()
-    coEvery { cameraHandler.handleList(null) } returns GatewaySession.InvokeResult.ok("{}")
-
-    val result = dispatcher.handleInvoke(OpenClawCameraCommand.List.rawValue, null)
-
-    assertEquals(true, result.ok)
-    assertEquals("{}", result.payloadJson)
+    privilegedCommands.forEach { command ->
+      val result = dispatcher.handleInvoke(command, null)
+      assertEquals("command $command must be refused", false, result.ok)
+      assertEquals("command $command error code", "CAPABILITY_DISABLED", result.error?.code)
+    }
   }
 
   @Test
-  fun `camera list returns error when camera disabled`() = runTest {
-    val dispatcher = createDispatcher(cameraEnabled = false)
-
-    val result = dispatcher.handleInvoke(OpenClawCameraCommand.List.rawValue, null)
-
+  fun `unknown commands are also refused before reaching the parser`() = runTest {
+    val dispatcher = createDispatcher()
+    val result = dispatcher.handleInvoke("no.such.command", null)
     assertEquals(false, result.ok)
-    assertEquals("CAMERA_DISABLED", result.error?.code)
+    assertEquals("CAPABILITY_DISABLED", result.error?.code)
   }
 
   @Test
-  fun `camera list returns error when app in background`() = runTest {
-    val dispatcher = createDispatcher(isForeground = false)
-
+  fun `gate applies regardless of foreground and capability toggles`() = runTest {
+    val dispatcher = createDispatcher(isForeground = false, cameraEnabled = false, locationEnabled = false)
     val result = dispatcher.handleInvoke(OpenClawCameraCommand.List.rawValue, null)
-
     assertEquals(false, result.ok)
-    assertEquals("NODE_BACKGROUND_UNAVAILABLE", result.error?.code)
-  }
-
-  @Test
-  fun `notifications list is dispatched to handler`() = runTest {
-    val dispatcher = createDispatcher()
-    coEvery { notificationsHandler.handleList() } returns GatewaySession.InvokeResult.ok("""{"notifications":[]}""")
-
-    val result = dispatcher.handleInvoke(OpenClawNotificationsCommand.List.rawValue, null)
-
-    assertEquals(true, result.ok)
-    assertEquals("""{"notifications":[]}""", result.payloadJson)
-  }
-
-  @Test
-  fun `system notify is dispatched to handler`() = runTest {
-    val dispatcher = createDispatcher()
-    val params = """{"message":"test"}"""
-    coEvery { systemHandler.handleNotify(params) } returns GatewaySession.InvokeResult.ok("""{"ok":true}""")
-
-    val result = dispatcher.handleInvoke(OpenClawSystemCommand.Notify.rawValue, params)
-
-    assertEquals(true, result.ok)
-    assertEquals("""{"ok":true}""", result.payloadJson)
-  }
-
-  @Test
-  fun `photos latest is dispatched to handler`() = runTest {
-    val dispatcher = createDispatcher()
-    coEvery { photosHandler.handleLatest() } returns GatewaySession.InvokeResult.ok("""{"photos":[]}""")
-
-    val result = dispatcher.handleInvoke(OpenClawPhotosCommand.Latest.rawValue, null)
-
-    assertEquals(true, result.ok)
-    assertEquals("""{"photos":[]}""", result.payloadJson)
-  }
-
-  @Test
-  fun `contacts search is dispatched to handler`() = runTest {
-    val dispatcher = createDispatcher()
-    val params = """{"query":"test"}"""
-    coEvery { contactsHandler.handleSearch(params) } returns GatewaySession.InvokeResult.ok("""{"contacts":[]}""")
-
-    val result = dispatcher.handleInvoke(OpenClawContactsCommand.Search.rawValue, params)
-
-    assertEquals(true, result.ok)
-    assertEquals("""{"contacts":[]}""", result.payloadJson)
-  }
-
-  @Test
-  fun `calendar events is dispatched to handler`() = runTest {
-    val dispatcher = createDispatcher()
-    val params = """{"startTime":"123"}"""
-    coEvery { calendarHandler.handleEvents(params) } returns GatewaySession.InvokeResult.ok("""{"events":[]}""")
-
-    val result = dispatcher.handleInvoke(OpenClawCalendarCommand.Events.rawValue, params)
-
-    assertEquals(true, result.ok)
-    assertEquals("""{"events":[]}""", result.payloadJson)
-  }
-
-  @Test
-  fun `motion activity is dispatched to handler`() = runTest {
-    val dispatcher = createDispatcher()
-    coEvery { motionHandler.handleActivity() } returns GatewaySession.InvokeResult.ok("""{"activity":"still"}""")
-
-    val result = dispatcher.handleInvoke(OpenClawMotionCommand.Activity.rawValue, null)
-
-    assertEquals(true, result.ok)
-    assertEquals("""{"activity":"still"}""", result.payloadJson)
-  }
-
-  @Test
-  fun `bridge status is dispatched to handler`() = runTest {
-    val dispatcher = createDispatcher()
-    every { mobileBridgeHandler.handleStatus() } returns GatewaySession.InvokeResult.ok("""{"enabled":true}""")
-
-    val result = dispatcher.handleInvoke(OpenClawBridgeCommand.Status.rawValue, null)
-
-    assertEquals(true, result.ok)
-    assertEquals("""{"enabled":true}""", result.payloadJson)
-  }
-
-  @Test
-  fun `bridge execute is dispatched to handler`() = runTest {
-    val dispatcher = createDispatcher()
-    val params = """{"requestId":"r1","capability":"device.info","arguments":{}}"""
-    coEvery { mobileBridgeHandler.handleExecute(params) } returns GatewaySession.InvokeResult.ok("""{"status":"completed"}""")
-
-    val result = dispatcher.handleInvoke(OpenClawBridgeCommand.Execute.rawValue, params)
-
-    assertEquals(true, result.ok)
-    assertEquals("""{"status":"completed"}""", result.payloadJson)
+    assertEquals("CAPABILITY_DISABLED", result.error?.code)
   }
 }

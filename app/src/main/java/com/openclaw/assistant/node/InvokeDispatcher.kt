@@ -1,5 +1,6 @@
 package com.openclaw.assistant.node
 
+import com.openclaw.assistant.BuildConfig
 import com.openclaw.assistant.gateway.GatewaySession
 import com.openclaw.assistant.protocol.OpenClawCanvasA2UICommand
 import com.openclaw.assistant.protocol.OpenClawCanvasCommand
@@ -46,6 +47,17 @@ class InvokeDispatcher(
   private val locationEnabled: () -> Boolean,
 ) {
   suspend fun handleInvoke(command: String, paramsJson: String?): GatewaySession.InvokeResult {
+    // The CTB build refuses every device/tool invoke before any handler is
+    // touched (Spec 001 §C): the clean manifest alone is not enough, because
+    // the handlers below reach camera, screen, SMS, location, notifications,
+    // contacts, calendar, Wi-Fi, clipboard and app-update surfaces.
+    if (BuildConfig.CTB_RESTRICTED) {
+      return GatewaySession.InvokeResult.error(
+        code = "CAPABILITY_DISABLED",
+        message = "CAPABILITY_DISABLED: device and tool invokes are disabled in this build",
+      )
+    }
+
     // Check foreground requirement for canvas/camera/screen commands
     if (
       command.startsWith(OpenClawCanvasCommand.NamespacePrefix) ||

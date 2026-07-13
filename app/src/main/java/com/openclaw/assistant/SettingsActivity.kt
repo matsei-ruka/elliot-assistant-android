@@ -253,7 +253,6 @@ fun SettingsScreen(
     onCredits: () -> Unit = {}
 ) {
     var httpUrl by rememberSaveable { mutableStateOf(settings.httpUrl) }
-    var authToken by rememberSaveable { mutableStateOf(settings.authToken) }
     var defaultAgentId by rememberSaveable { mutableStateOf(settings.defaultAgentId) }
     var ttsEnabled by rememberSaveable { mutableStateOf(settings.ttsEnabled) }
     var ttsSpeed by rememberSaveable { mutableStateOf(settings.ttsSpeed) }
@@ -307,13 +306,13 @@ fun SettingsScreen(
     var showTtsTypeMenu by rememberSaveable { mutableStateOf(false) }
     
     // ElevenLabs
-    var elevenLabsApiKey by rememberSaveable { mutableStateOf(settings.elevenLabsApiKey) }
+    var elevenLabsApiKey by remember { mutableStateOf(settings.elevenLabsApiKey) }
     var elevenLabsVoiceId by rememberSaveable { mutableStateOf(settings.elevenLabsVoiceId) }
     var elevenLabsSpeed by rememberSaveable { mutableStateOf(settings.elevenLabsSpeed) }
     var showElevenLabsApiKey by rememberSaveable { mutableStateOf(false) }
     
     // OpenAI
-    var openAiApiKey by rememberSaveable { mutableStateOf(settings.openAiApiKey) }
+    var openAiApiKey by remember { mutableStateOf(settings.openAiApiKey) }
     var openAiVoice by rememberSaveable { mutableStateOf(settings.openAiVoice) }
     var showOpenAiApiKey by rememberSaveable { mutableStateOf(false) }
     
@@ -345,9 +344,9 @@ fun SettingsScreen(
     var gatewayHost by rememberSaveable { mutableStateOf(manualHostState) }
     var gatewayPort by rememberSaveable { mutableStateOf(manualPortState.toString()) }
     var gatewayTls by rememberSaveable { mutableStateOf(manualTlsState) }
-    var gatewayToken by rememberSaveable { mutableStateOf(gatewayTokenState) }
-    var gatewayPassword by rememberSaveable { mutableStateOf(runtime.getGatewayPassword() ?: "") }
-    var gatewayBootstrapToken by rememberSaveable { mutableStateOf(runtime.getGatewayBootstrapToken() ?: "") }
+    var gatewayToken by remember { mutableStateOf(gatewayTokenState) }
+    var gatewayPassword by remember { mutableStateOf(runtime.getGatewayPassword() ?: "") }
+    var gatewayBootstrapToken by remember { mutableStateOf(runtime.getGatewayBootstrapToken() ?: "") }
     var showGatewayPassword by rememberSaveable { mutableStateOf(false) }
     var usePasswordAuth by rememberSaveable { mutableStateOf(runtime.getGatewayPassword()?.isNotEmpty() == true) }
 
@@ -362,7 +361,7 @@ fun SettingsScreen(
     // entry (Spec 001): the field starts blank and blank means "keep the
     // stored token".
     var httpInputUrl by rememberSaveable { mutableStateOf(httpUrl) }
-    var httpToken by rememberSaveable { mutableStateOf("") }
+    var httpToken by remember { mutableStateOf("") }
 
     // Update local state if runtime state changes behind the scenes
     LaunchedEffect(manualHostState, manualPortState, manualTlsState, gatewayTokenState) {
@@ -884,12 +883,13 @@ fun SettingsScreen(
                             // CTB token: write-only. It is stored encrypted and
                             // never displayed after entry (Spec 001); leave the
                             // field blank to keep the saved token.
+                            var hasSavedHttpToken by remember { mutableStateOf(settings.authToken.isNotBlank()) }
                             OutlinedTextField(
                                 value = httpToken,
                                 onValueChange = { httpToken = it.trim(); testResult = null },
                                 label = { Text(stringResource(R.string.auth_token_label)) },
                                 placeholder = {
-                                    if (settings.authToken.isNotBlank()) {
+                                    if (hasSavedHttpToken) {
                                         Text(stringResource(R.string.ctb_token_saved_hint))
                                     }
                                 },
@@ -899,6 +899,16 @@ fun SettingsScreen(
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
                             )
+                            if (hasSavedHttpToken) {
+                                // Explicit action: a blank field keeps the token.
+                                TextButton(onClick = {
+                                    settings.authToken = ""
+                                    httpToken = ""
+                                    hasSavedHttpToken = false
+                                }) {
+                                    Text(stringResource(R.string.ctb_clear_saved_token))
+                                }
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(24.dp))
@@ -1883,7 +1893,6 @@ private enum class SettingsCategory {
     Backend,
     Chat,
     Voice,
-    MobileBridge,
     WakeWord,
     Diagnostics,
     Language,
@@ -1896,7 +1905,6 @@ private fun SettingsCategory.title(): String = when (this) {
     SettingsCategory.Backend -> stringResource(R.string.settings_category_connections)
     SettingsCategory.Chat -> stringResource(R.string.settings_category_chat)
     SettingsCategory.Voice -> stringResource(R.string.settings_category_voice_mode)
-    SettingsCategory.MobileBridge -> stringResource(R.string.settings_category_mobile_bridge)
     SettingsCategory.WakeWord -> stringResource(R.string.wake_word)
     SettingsCategory.Diagnostics -> stringResource(R.string.diagnostics_title)
     SettingsCategory.Language -> stringResource(R.string.language_section)

@@ -16,31 +16,43 @@ never record prompt or reply content.
 | In-flight call cancelled immediately on coroutine cancel | pass |
 | Redacted log format (`CtbLogTest`) | pass |
 
-## Device acceptance matrix (Spec 001 §Acceptance tests)
+## Device acceptance matrix
 
-Fill one row per device/network combination. Status: `pass` / `fail` / `pending`.
+Fresh install (or clear data) first on Pixel, then on Samsung; each on Wi-Fi
+and mobile data. Status: `pass` / `fail` / `pending`.
 
 | # | Test | Pixel (Wi-Fi) | Pixel (mobile) | Samsung (Wi-Fi) | Samsung (mobile) |
 |---|---|---|---|---|---|
-| 1 | Signed debug APK from clean checkout; unit tests and lint pass | pending | pending | pending | pending |
-| 2 | Fresh install requests only minimum permissions; Settings shows no camera/SMS/location/contacts/calendar declaration | pending | pending | pending | pending |
-| 3 | Endpoint+token configured; health verification succeeds without a Telegram `ping` | pending | pending | pending | pending |
-| 4 | Default Assistant gesture → speak → Telegram-agent reply via TTS | pending | pending | pending | pending |
-| 5 | Reply played exactly once with overlay hidden / screen locked | pending | pending | pending | pending |
-| 6 | Reply held > 120 s: app keeps waiting and succeeds before 320 s | pending | pending | pending | pending |
-| 7 | Cancel during wait, then agent replies: nothing spoken, no session service/wake lock left | pending | pending | pending | pending |
-| 8 | 401 / 429 / network loss / 300+ s wait: clear recoverable errors, no crash, no token/content in logs | pending | pending | pending | pending |
-| 9 | In-app chat sends the same completed text with the same TTS behavior | pending | pending | pending | pending |
+| 1 | CTB onboarding completes without QR or Gateway | pending | pending | pending | pending |
+| 2 | Only microphone/notification permissions requested | pending | pending | pending | pending |
+| 3 | App can be set as the system Digital Assistant | pending | pending | pending | pending |
+| 4 | Gateway offline + Assistant gesture → listening starts | pending | pending | pending | pending |
+| 5 | Short request → CTB → Telegram reply → local TTS exactly once | pending | pending | pending | pending |
+| 6 | Reply still played with overlay hidden and screen locked | pending | pending | pending | pending |
+| 7 | Reply held > 120 s succeeds before 320 s | pending | pending | pending | pending |
+| 8 | Cancel during THINKING → no late TTS | pending | pending | pending | pending |
+| 9 | Wrong token → 401 shown, saved token NOT cleared | pending | pending | pending | pending |
+| 10 | Network lost and restored → clear recoverable error | pending | pending | pending | pending |
+| 11 | After success/error: no foreground service or wake lock left | pending | pending | pending | pending |
 
 Record device rows as: `Android <version>, <model>, <network>, <elapsed>, <outcome>`.
 
 ## Known deviations and notes
 
-- **Loopback HTTP escape.** `CtbHttpConfig.validateEndpoint` accepts plain
-  HTTP only for `localhost`/`127.0.0.1`/`::1`, so the transport can be
-  exercised against MockWebServer in unit tests. Every non-loopback endpoint
-  must be HTTPS ending in `/v1/chat/completions`, exactly as Spec 001 §B.5
-  requires.
+- **Loopback HTTP escape (debug only).** `CtbHttpConfig.validateEndpoint`
+  accepts plain HTTP only for `localhost`/`127.0.0.1`/`::1` and only in debug
+  builds (`allowLoopbackHttp = BuildConfig.DEBUG`), so the transport can be
+  exercised against MockWebServer. Release refuses all cleartext both in the
+  validator and in `network_security_config`. Every non-loopback endpoint
+  must be an HTTPS URL with the exact `/v1/chat/completions` path and no
+  userinfo, query, or fragment.
+- **Routing.** The session resolves its backend exactly once at open via
+  `VoiceSessionRouter` (pure, unit-tested): OPENCLAW_HTTP works with the
+  gateway offline; gateway health/session management only run for a
+  OPENCLAW_GATEWAY route; Hermes is unchanged.
+- **Invoke gate.** `BuildConfig.CTB_RESTRICTED` makes `InvokeDispatcher`
+  refuse every device/tool invoke with the stable `CAPABILITY_DISABLED`
+  error before touching any handler.
 - **Health check is unauthenticated.** `GET /healthz` is sent without the
   bearer token: a healthz endpoint that ignored auth would otherwise report
   "verified" for a wrong token. Token validity is exercised by the first real

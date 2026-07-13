@@ -17,25 +17,61 @@ class CtbHttpConfigTest {
 
     @Test
     fun `accepts surrounding whitespace without rewriting`() {
-        val url = CtbHttpConfig.validateEndpoint("  https://bridge.italia.ae/v1/chat/completions  ")
-        assertNotNull(url)
+        assertNotNull(
+            CtbHttpConfig.validateEndpoint("  https://bridge.italia.ae/v1/chat/completions  ")
+        )
     }
 
     @Test
-    fun `accepts a path prefix as long as it ends in the completions path`() {
-        assertNotNull(CtbHttpConfig.validateEndpoint("https://host.example/proxy/v1/chat/completions"))
+    fun `requires the exact completions path — no prefixes`() {
+        assertNull(CtbHttpConfig.validateEndpoint("https://host.example/proxy/v1/chat/completions"))
     }
 
     @Test
-    fun `rejects plain http for non-loopback hosts`() {
-        assertNull(CtbHttpConfig.validateEndpoint("http://bridge.italia.ae/v1/chat/completions"))
-        assertNull(CtbHttpConfig.validateEndpoint("http://192.168.1.10/v1/chat/completions"))
+    fun `rejects userinfo query and fragment`() {
+        assertNull(CtbHttpConfig.validateEndpoint("https://user:pw@bridge.italia.ae/v1/chat/completions"))
+        assertNull(CtbHttpConfig.validateEndpoint("https://user@bridge.italia.ae/v1/chat/completions"))
+        assertNull(CtbHttpConfig.validateEndpoint("https://bridge.italia.ae/v1/chat/completions?key=value"))
+        assertNull(CtbHttpConfig.validateEndpoint("https://bridge.italia.ae/v1/chat/completions#frag"))
     }
 
     @Test
-    fun `allows plain http only for loopback test servers`() {
-        assertNotNull(CtbHttpConfig.validateEndpoint("http://localhost:8080/v1/chat/completions"))
-        assertNotNull(CtbHttpConfig.validateEndpoint("http://127.0.0.1:8080/v1/chat/completions"))
+    fun `rejects plain http for non-loopback hosts even when loopback is allowed`() {
+        assertNull(
+            CtbHttpConfig.validateEndpoint(
+                "http://bridge.italia.ae/v1/chat/completions",
+                allowLoopbackHttp = true,
+            )
+        )
+        assertNull(
+            CtbHttpConfig.validateEndpoint(
+                "http://192.168.1.10/v1/chat/completions",
+                allowLoopbackHttp = true,
+            )
+        )
+    }
+
+    @Test
+    fun `allows loopback http only when the debug escape is enabled`() {
+        assertNotNull(
+            CtbHttpConfig.validateEndpoint(
+                "http://localhost:8080/v1/chat/completions",
+                allowLoopbackHttp = true,
+            )
+        )
+        assertNotNull(
+            CtbHttpConfig.validateEndpoint(
+                "http://127.0.0.1:8080/v1/chat/completions",
+                allowLoopbackHttp = true,
+            )
+        )
+        // Release behavior: loopback HTTP refused as well.
+        assertNull(
+            CtbHttpConfig.validateEndpoint(
+                "http://127.0.0.1:8080/v1/chat/completions",
+                allowLoopbackHttp = false,
+            )
+        )
     }
 
     @Test
@@ -66,10 +102,9 @@ class CtbHttpConfigTest {
     @Test
     fun `origin keeps only scheme host and port`() {
         val endpoint = CtbHttpConfig.validateEndpoint(
-            "https://bridge.italia.ae/v1/chat/completions?key=value"
+            "https://bridge.italia.ae/v1/chat/completions"
         )!!
-        val origin = CtbHttpConfig.origin(endpoint)
-        assertEquals("https://bridge.italia.ae/", origin.toString())
+        assertEquals("https://bridge.italia.ae/", CtbHttpConfig.origin(endpoint).toString())
     }
 
     @Test

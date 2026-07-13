@@ -4,12 +4,9 @@ import android.Manifest
 import android.util.Log
 import android.content.Context
 import android.content.pm.PackageManager
-import android.hardware.Sensor
-import android.hardware.SensorManager
 import android.os.Build
 import android.content.Intent
 import android.net.Uri
-import android.provider.Settings
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -94,32 +91,31 @@ private enum class SetupStep(val index: Int) {
 }
 
 private enum class ConnectionMode {
+    CTB,
     Hermes,
     SetupCode,
     Manual
 }
 
+/** Fixed CTB defaults for a fresh install (Spec 001, fixed configuration). */
+internal const val CTB_DEFAULT_ENDPOINT = "https://bridge.italia.ae/v1/chat/completions"
+internal const val CTB_DEFAULT_MODEL = "telegram-agent"
+
+// Only the permissions the CTB manifest actually declares (Spec 001 §C).
+// The upstream device-control toggles (discovery, location, camera, photos,
+// contacts, calendar, motion, SMS) and the special-access rows (notification
+// listener, unknown-app installs) are removed with their capabilities.
 private enum class PermissionToggle(
     val titleRes: Int,
     val descRes: Int,
     val icon: ImageVector,
     val permissions: List<String>
 ) {
-    Discovery(
-        R.string.permission_discovery,
-        R.string.permission_discovery_desc,
-        Icons.Default.Wifi,
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            listOf(Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.ACCESS_FINE_LOCATION)
-        } else {
-            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-    ),
-    Location(
-        R.string.capability_location,
-        R.string.permission_location_desc,
-        Icons.Default.LocationOn,
-        listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+    Microphone(
+        R.string.permission_record_audio,
+        R.string.permission_record_audio_desc,
+        Icons.Default.Mic,
+        listOf(Manifest.permission.RECORD_AUDIO)
     ),
     Notifications(
         R.string.permission_notifications,
@@ -130,93 +126,7 @@ private enum class PermissionToggle(
         } else {
             emptyList()
         }
-    ),
-    Microphone(
-        R.string.permission_record_audio,
-        R.string.permission_record_audio_desc,
-        Icons.Default.Mic,
-        listOf(Manifest.permission.RECORD_AUDIO)
-    ),
-    Camera(
-        R.string.capability_camera,
-        R.string.permission_camera_desc,
-        Icons.Default.PhotoCamera,
-        listOf(Manifest.permission.CAMERA)
-    ),
-    Photos(
-        R.string.capability_screen,
-        R.string.permission_camera_desc, // Placeholder desc: Screen Capture
-        Icons.Default.Photo,
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            listOf(Manifest.permission.READ_MEDIA_IMAGES)
-        } else {
-            listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-    ),
-    Contacts(
-        R.string.permission_contacts,
-        R.string.permission_contacts_desc,
-        Icons.Default.Contacts,
-        listOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
-    ),
-    Calendar(
-        R.string.permission_calendar,
-        R.string.permission_calendar_desc,
-        Icons.Default.CalendarMonth,
-        listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
-    ),
-    Motion(
-        R.string.permission_motion,
-        R.string.permission_motion_desc,
-        Icons.Default.DirectionsRun,
-        listOf(Manifest.permission.ACTIVITY_RECOGNITION)
-    ),
-    SMS(
-        R.string.capability_sms,
-        R.string.permission_send_sms_desc,
-        Icons.Default.Sms,
-        listOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS)
     )
-}
-
-private enum class SpecialAccessToggle(
-    val titleRes: Int,
-    val descRes: Int,
-    val icon: ImageVector
-) {
-    NotificationListener(
-        R.string.permission_notification_listener,
-        R.string.permission_notification_listener_desc,
-        Icons.Default.NotificationsActive
-    ),
-    AppUpdates(
-        R.string.permission_install_unknown_apps,
-        R.string.permission_install_unknown_apps_desc,
-        Icons.Default.SystemUpdate
-    )
-}
-
-private fun hasMotionCapabilities(context: Context): Boolean {
-    val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    return sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null ||
-            sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION) != null
-}
-
-private fun isNotificationListenerEnabled(context: Context): Boolean {
-    val enabledListeners = Settings.Secure.getString(
-        context.contentResolver,
-        "enabled_notification_listeners"
-    )
-    val componentName = "${context.packageName}/com.openclaw.assistant.service.OpenClawNotificationListenerService"
-    return enabledListeners?.contains(componentName) == true
-}
-
-private fun canInstallUnknownApps(context: Context): Boolean {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        context.packageManager.canRequestPackageInstalls()
-    } else {
-        true
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -236,14 +146,24 @@ fun SetupGuideScreen(
 
     var currentStep by rememberSaveable { mutableStateOf(SetupStep.Welcome) }
 
-    // UI State for Connection step
-    var connectionMode by rememberSaveable { mutableStateOf(ConnectionMode.Hermes) }
+    // UI State for Connection step. CTB is the default mode for a fresh
+    // install: no QR, no Gateway required.
+    var connectionMode by rememberSaveable { mutableStateOf(ConnectionMode.CTB) }
     var setupCode by rememberSaveable { mutableStateOf("") }
     var manualHost by rememberSaveable { mutableStateOf(runtime.manualHost.value) }
     var manualPort by rememberSaveable { mutableStateOf(runtime.manualPort.value.toString()) }
     var manualTls by rememberSaveable { mutableStateOf(runtime.manualTls.value) }
-    var authToken by rememberSaveable { mutableStateOf(settings.authToken) }
-    var manualPassword by rememberSaveable { mutableStateOf(runtime.getGatewayPassword() ?: "") }
+    // Secrets: plain remember with an empty initial value — never preloaded
+    // from storage and never rememberSaveable (no token in a Bundle).
+    var authToken by remember { mutableStateOf("") }
+    var manualPassword by remember { mutableStateOf("") }
+
+    // CTB connection state. The endpoint/model are not secrets; the token is
+    // write-only and blank means "keep the token already stored".
+    var ctbEndpoint by rememberSaveable { mutableStateOf(CTB_DEFAULT_ENDPOINT) }
+    var ctbModel by rememberSaveable { mutableStateOf(CTB_DEFAULT_MODEL) }
+    var ctbToken by remember { mutableStateOf("") }
+    val existingCtbBackend = configuredBackends.firstOrNull { it.type == BackendType.OPENCLAW_HTTP }
 
     val totalSteps = SetupStep.entries.size
 
@@ -319,6 +239,10 @@ fun SetupGuideScreen(
                     manualTls = manualTls,
                     authToken = authToken,
                     manualPassword = manualPassword,
+                    ctbEndpoint = ctbEndpoint,
+                    ctbModel = ctbModel,
+                    ctbToken = ctbToken,
+                    hasSavedCtbToken = existingCtbBackend?.apiKeyOrToken?.isNotBlank() == true,
                     onModeChange = { connectionMode = it },
                     onSetupCodeChange = { setupCode = it },
                     onManualHostChange = { manualHost = it },
@@ -326,8 +250,40 @@ fun SetupGuideScreen(
                     onManualTlsChange = { manualTls = it },
                     onAuthTokenChange = { authToken = it },
                     onManualPasswordChange = { manualPassword = it },
+                    onCtbEndpointChange = { ctbEndpoint = it },
+                    onCtbModelChange = { ctbModel = it },
+                    onCtbTokenChange = { ctbToken = it },
                     configuredBackendCount = configuredBackends.size,
                     onNext = {
+                        if (connectionMode == ConnectionMode.CTB) {
+                            // BackendRepository is the single source of truth:
+                            // the token is stored only there (encrypted), never
+                            // in SettingsRepository.
+                            val endpoint = com.openclaw.assistant.api.CtbHttpConfig
+                                .validateEndpoint(ctbEndpoint)
+                            if (endpoint != null) {
+                                val base = existingCtbBackend ?: AgentBackendConfig(
+                                    displayName = context.getString(R.string.ctb_backend_display_name),
+                                    type = BackendType.OPENCLAW_HTTP,
+                                )
+                                val config = base.copy(
+                                    baseUrl = ctbEndpoint.trim(),
+                                    apiKeyOrToken = ctbToken.trim()
+                                        .ifBlank { existingCtbBackend?.apiKeyOrToken },
+                                    modelName = ctbModel.trim().ifBlank { CTB_DEFAULT_MODEL },
+                                    // CTB rejects streaming (Spec 001 §B.3).
+                                    useStreaming = false,
+                                    enabled = true,
+                                    isPrimary = true,
+                                )
+                                backendRepository.upsert(config)
+                                backendRepository.setPrimary(config.id)
+                                ctbToken = ""
+                                currentStep = SetupStep.Permissions
+                            }
+                            return@ConnectionStep
+                        }
+
                         if (connectionMode == ConnectionMode.Hermes) {
                             currentStep = SetupStep.Permissions
                             return@ConnectionStep
@@ -383,14 +339,10 @@ fun SetupGuideScreen(
                                             runtime.setGatewayBootstrapToken("")
                                         }
                                     }
-                                    // Auto-generate HTTP URL and token from gateway endpoint
-                                    GatewayConfigUtils.composeGatewayManualUrl(parsed.host, parsed.port.toString(), parsed.tls)
-                                        ?.let {
-                                            if (com.openclaw.assistant.shared.utils.NetworkUtils.isUrlSecure(it)) {
-                                                settings.httpUrl = it
-                                            }
-                                        }
-                                    decoded.token?.let { settings.authToken = it }
+                                    // Gateway credentials stay in gateway
+                                    // storage only: never copied into the CTB
+                                    // HTTP settings, and a gateway origin is
+                                    // not a valid CTB completion endpoint.
                                 }
                             }
                         } else {
@@ -400,16 +352,6 @@ fun SetupGuideScreen(
                             // Save to gateway-specific storage (prefs), not HTTP settings
                             runtime.prefs.saveGatewayToken(authToken.trim())
                             runtime.setGatewayPassword(manualPassword.trim())
-                            // Auto-generate HTTP URL from gateway endpoint
-                            GatewayConfigUtils.composeGatewayManualUrl(manualHost, manualPort, manualTls)
-                                ?.let {
-                                    if (com.openclaw.assistant.shared.utils.NetworkUtils.isUrlSecure(it)) {
-                                        settings.httpUrl = it
-                                    }
-                                }
-                            // Set HTTP auth token from manual input
-                            if (authToken.isNotBlank()) settings.authToken = authToken.trim()
-                            else if (manualPassword.isNotBlank()) settings.authToken = manualPassword.trim()
                         }
                         runtime.setManualEnabled(true)
                         settings.connectionType = SettingsRepository.CONNECTION_TYPE_GATEWAY
@@ -419,14 +361,21 @@ fun SetupGuideScreen(
                 SetupStep.Permissions -> PermissionsStep(
                     onNext = { currentStep = SetupStep.FinalCheck }
                 )
-                SetupStep.FinalCheck -> FinalCheckStep(
-                    settings = settings,
-                    isHermesSetup = connectionMode == ConnectionMode.Hermes,
-                    onFinish = {
-                        settings.hasCompletedSetup = true
-                        onComplete()
-                    }
-                )
+                SetupStep.FinalCheck -> when (connectionMode) {
+                    ConnectionMode.CTB -> CtbFinalStep(
+                        onFinish = {
+                            settings.hasCompletedSetup = true
+                            onComplete()
+                        }
+                    )
+                    else -> FinalCheckStep(
+                        isHermesSetup = connectionMode == ConnectionMode.Hermes,
+                        onFinish = {
+                            settings.hasCompletedSetup = true
+                            onComplete()
+                        }
+                    )
+                }
             }
         }
     }
@@ -502,6 +451,10 @@ private fun ConnectionStep(
     manualTls: Boolean,
     authToken: String,
     manualPassword: String,
+    ctbEndpoint: String,
+    ctbModel: String,
+    ctbToken: String,
+    hasSavedCtbToken: Boolean,
     onModeChange: (ConnectionMode) -> Unit,
     onSetupCodeChange: (String) -> Unit,
     onManualHostChange: (String) -> Unit,
@@ -509,6 +462,9 @@ private fun ConnectionStep(
     onManualTlsChange: (Boolean) -> Unit,
     onAuthTokenChange: (String) -> Unit,
     onManualPasswordChange: (String) -> Unit,
+    onCtbEndpointChange: (String) -> Unit,
+    onCtbModelChange: (String) -> Unit,
+    onCtbTokenChange: (String) -> Unit,
     configuredBackendCount: Int,
     onNext: () -> Unit
 ) {
@@ -537,9 +493,98 @@ private fun ConnectionStep(
             style = MaterialTheme.typography.bodyMedium,
             color = OnboardingTextSecondary
         )
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        if (effectiveMode == ConnectionMode.Hermes) {
+        // Mode selector — CTB (default), Hermes pairing, Gateway QR.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = effectiveMode == ConnectionMode.CTB,
+                onClick = { onModeChange(ConnectionMode.CTB) },
+                label = { Text(stringResource(R.string.setup_mode_ctb)) },
+            )
+            FilterChip(
+                selected = effectiveMode == ConnectionMode.Hermes,
+                onClick = { onModeChange(ConnectionMode.Hermes) },
+                label = { Text(stringResource(R.string.setup_mode_hermes)) },
+            )
+            FilterChip(
+                selected = effectiveMode == ConnectionMode.SetupCode,
+                onClick = { onModeChange(ConnectionMode.SetupCode) },
+                label = { Text(stringResource(R.string.setup_mode_gateway)) },
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (effectiveMode == ConnectionMode.CTB) {
+            val ctbFieldColors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = OnboardingTextPrimary,
+                unfocusedTextColor = OnboardingTextPrimary,
+                focusedLabelColor = OnboardingGradientMid,
+                unfocusedLabelColor = OnboardingTextSecondary,
+                focusedBorderColor = OnboardingGradientMid,
+                unfocusedBorderColor = OnboardingBorder,
+                cursorColor = OnboardingGradientMid,
+                focusedPlaceholderColor = OnboardingTextSecondary,
+                unfocusedPlaceholderColor = OnboardingTextSecondary,
+            )
+            val endpointValid =
+                com.openclaw.assistant.api.CtbHttpConfig.validateEndpoint(ctbEndpoint) != null
+
+            Text(
+                text = stringResource(R.string.ctb_setup_desc),
+                style = MaterialTheme.typography.bodyMedium,
+                color = OnboardingTextSecondary
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            OutlinedTextField(
+                value = ctbEndpoint,
+                onValueChange = onCtbEndpointChange,
+                label = { Text(stringResource(R.string.webhook_url_label)) },
+                isError = ctbEndpoint.isNotBlank() && !endpointValid,
+                supportingText = {
+                    if (ctbEndpoint.isNotBlank() && !endpointValid) {
+                        Text(
+                            stringResource(R.string.ctb_endpoint_invalid),
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                colors = ctbFieldColors,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedTextField(
+                value = ctbModel,
+                onValueChange = onCtbModelChange,
+                label = { Text(stringResource(R.string.ctb_model_label)) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                colors = ctbFieldColors,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            // Write-only token: stored encrypted in BackendRepository only,
+            // never displayed after entry; blank keeps the saved token.
+            OutlinedTextField(
+                value = ctbToken,
+                onValueChange = onCtbTokenChange,
+                label = { Text(stringResource(R.string.auth_token_label)) },
+                placeholder = {
+                    Text(
+                        stringResource(
+                            if (hasSavedCtbToken) R.string.ctb_token_saved_hint
+                            else R.string.ctb_token_required
+                        )
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                colors = ctbFieldColors,
+            )
+        } else if (effectiveMode == ConnectionMode.Hermes) {
             AgentVoiceUnifiedPairingContent(configuredBackendCount = configuredBackendCount)
             pairingReview?.let { draft ->
                 Spacer(modifier = Modifier.height(16.dp))
@@ -704,6 +749,11 @@ private fun ConnectionStep(
 
         // --- 次へボタン・画面下部に固定 ---
         val canContinue = when (mode) {
+            // A new CTB backend needs a valid endpoint and a non-empty token;
+            // an already-saved token may be kept by leaving the field blank.
+            ConnectionMode.CTB ->
+                com.openclaw.assistant.api.CtbHttpConfig.validateEndpoint(ctbEndpoint) != null &&
+                    (ctbToken.isNotBlank() || hasSavedCtbToken)
             ConnectionMode.Hermes -> configuredBackendCount > 0 || pairingReview?.toPairingPayload() != null
             ConnectionMode.SetupCode -> GatewayConfigUtils.decodeGatewaySetupCode(setupCode) != null
             ConnectionMode.Manual -> GatewayConfigUtils.decodeGatewaySetupCode(setupCode) != null
@@ -848,26 +898,10 @@ private fun PairingScanButton(
 private fun PermissionsStep(onNext: () -> Unit) {
     val context = LocalContext.current
 
-    val smsAvailable = remember(context) {
-        context.packageManager?.hasSystemFeature(PackageManager.FEATURE_TELEPHONY) == true
-    }
-    val motionAvailable = remember(context) {
-        hasMotionCapabilities(context)
-    }
-
     var permissionsStatus by remember {
         mutableStateOf(PermissionToggle.entries.associateWith { toggle ->
             toggle.permissions.all {
                 ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-            }
-        })
-    }
-
-    var specialAccessStatus by remember {
-        mutableStateOf(SpecialAccessToggle.entries.associateWith { toggle ->
-            when (toggle) {
-                SpecialAccessToggle.NotificationListener -> isNotificationListenerEnabled(context)
-                SpecialAccessToggle.AppUpdates -> canInstallUnknownApps(context)
             }
         })
     }
@@ -882,18 +916,11 @@ private fun PermissionsStep(onNext: () -> Unit) {
         }
     }
 
-    // We can use a LifecycleEventObserver to refresh special access when returning from settings
+    // Refresh when returning from system settings
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                specialAccessStatus = SpecialAccessToggle.entries.associateWith { toggle ->
-                    when (toggle) {
-                        SpecialAccessToggle.NotificationListener -> isNotificationListenerEnabled(context)
-                        SpecialAccessToggle.AppUpdates -> canInstallUnknownApps(context)
-                    }
-                }
-                // Also refresh normal permissions in case they were changed in settings
                 permissionsStatus = PermissionToggle.entries.associateWith { toggle ->
                     toggle.permissions.all {
                         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
@@ -925,8 +952,6 @@ private fun PermissionsStep(onNext: () -> Unit) {
         Spacer(modifier = Modifier.height(24.dp))
 
         PermissionToggle.entries.forEach { toggle ->
-            if (toggle == PermissionToggle.SMS && !smsAvailable) return@forEach
-            if (toggle == PermissionToggle.Motion && !motionAvailable) return@forEach
             if (toggle == PermissionToggle.Notifications && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return@forEach
 
             PermissionItem(
@@ -936,40 +961,6 @@ private fun PermissionsStep(onNext: () -> Unit) {
                 isGranted = permissionsStatus[toggle] == true,
                 onClick = {
                     launcher.launch(toggle.permissions.toTypedArray())
-                }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = stringResource(R.string.permission_special_access),
-            style = MaterialTheme.typography.titleMedium,
-            color = OnboardingTextPrimary,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-
-        SpecialAccessToggle.entries.forEach { toggle ->
-            PermissionItem(
-                icon = toggle.icon,
-                name = stringResource(toggle.titleRes),
-                desc = stringResource(toggle.descRes),
-                isGranted = specialAccessStatus[toggle] == true,
-                onClick = {
-                    when (toggle) {
-                        SpecialAccessToggle.NotificationListener -> {
-                            val intent = Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
-                            context.startActivity(intent)
-                        }
-                        SpecialAccessToggle.AppUpdates -> {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                                    data = Uri.parse("package:${context.packageName}")
-                                }
-                                context.startActivity(intent)
-                            }
-                        }
-                    }
                 }
             )
         }
@@ -1036,8 +1027,145 @@ private fun PermissionItem(
 }
 
 @Composable
+private fun CtbFinalStep(onFinish: () -> Unit) {
+    val context = LocalContext.current
+    val repo = remember { BackendRepository.getInstance(context) }
+    val backends by repo.backends.collectAsState()
+    val ctbBackend = remember(backends) {
+        backends.firstOrNull { it.enabled && it.type == BackendType.OPENCLAW_HTTP }
+    }
+    val scope = rememberCoroutineScope()
+    val apiClient = remember { OpenClawClient() }
+    var isTesting by remember { mutableStateOf(false) }
+    var healthOk by remember { mutableStateOf(false) }
+    var healthError by remember { mutableStateOf<String?>(null) }
+
+    val grantedCount = remember(context) {
+        PermissionToggle.entries.count { toggle ->
+            toggle.permissions.all {
+                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = stringResource(R.string.setup_guide_final_check_title),
+                style = MaterialTheme.typography.headlineSmall,
+                color = OnboardingTextPrimary,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.ctb_verify_desc),
+                style = MaterialTheme.typography.bodyMedium,
+                color = OnboardingTextSecondary,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = ctbBackend?.baseUrl.orEmpty(),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = stringResource(R.string.ctb_model_label) + ": " + ctbBackend?.modelName.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (ctbBackend?.apiKeyOrToken?.isNotBlank() == true) {
+                    Text(
+                        text = stringResource(R.string.ctb_token_saved_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = stringResource(R.string.permission_summary_ctb_format, grantedCount, PermissionToggle.entries.size),
+                style = MaterialTheme.typography.bodySmall,
+                color = OnboardingTextSecondary
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            if (healthOk) {
+                Text(
+                    text = stringResource(R.string.ctb_health_ok),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            // Verification failure never clears the saved endpoint or token:
+            // the error is shown and the user may retry.
+            healthError?.let {
+                Text(
+                    text = stringResource(R.string.failed, it),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+
+        if (!healthOk) {
+            Button(
+                onClick = {
+                    val backend = ctbBackend ?: return@Button
+                    scope.launch {
+                        isTesting = true
+                        healthError = null
+                        val result = apiClient.testConnection(
+                            backend.baseUrl.orEmpty(),
+                            backend.apiKeyOrToken,
+                        )
+                        result.fold(
+                            onSuccess = { healthOk = true },
+                            onFailure = { healthError = it.message ?: it.javaClass.simpleName },
+                        )
+                        isTesting = false
+                    }
+                },
+                enabled = !isTesting && ctbBackend != null,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = OnboardingGradientMid)
+            ) {
+                if (isTesting) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                } else {
+                    Text(stringResource(R.string.test_connection_button), fontSize = 18.sp)
+                }
+            }
+        } else {
+            Button(
+                onClick = onFinish,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = OnboardingGradientMid)
+            ) {
+                Text(stringResource(R.string.setup_guide_finish), fontSize = 18.sp)
+            }
+        }
+    }
+}
+
+@Composable
 private fun FinalCheckStep(
-    settings: SettingsRepository,
     isHermesSetup: Boolean,
     onFinish: () -> Unit
 ) {
@@ -1059,34 +1187,9 @@ private fun FinalCheckStep(
     val manualTls by runtime.manualTls.collectAsState()
     val isPairingRequired by runtime.isPairingRequired.collectAsState()
 
-    val scope = rememberCoroutineScope()
-    val apiClient = remember { OpenClawClient() }
     var attemptedConnect by remember { mutableStateOf(false) }
     var pairingDetected by remember { mutableStateOf(false) }
     var isTesting by remember { mutableStateOf(false) }
-    var isFinishing by remember { mutableStateOf(false) }
-
-    val finishWithHttpTest: () -> Unit = {
-        scope.launch {
-            isFinishing = true
-            if (settings.httpUrl.isNotBlank()) {
-                val testUrl = settings.getChatCompletionsUrl()
-                val result = apiClient.testConnection(testUrl, settings.authToken)
-                if (result.isSuccess) {
-                    settings.isVerified = true
-                } else {
-                    // HTTP test failed: skip HTTP config
-                    settings.httpUrl = ""
-                    settings.authToken = ""
-                    settings.isVerified = false
-                }
-            }
-            isFinishing = false
-            onFinish()
-        }
-    }
-
-
 
     LaunchedEffect(isConnected, isPairingRequired, statusText, attemptedConnect) {
         if (isPairingRequired) pairingDetected = true
@@ -1117,14 +1220,6 @@ private fun FinalCheckStep(
         PermissionToggle.entries.count { toggle ->
             toggle.permissions.all {
                 ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-            }
-        }
-    }
-    val specialCount = remember(context) {
-        SpecialAccessToggle.entries.count { toggle ->
-            when (toggle) {
-                SpecialAccessToggle.NotificationListener -> isNotificationListenerEnabled(context)
-                SpecialAccessToggle.AppUpdates -> canInstallUnknownApps(context)
             }
         }
     }
@@ -1208,7 +1303,7 @@ private fun FinalCheckStep(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = stringResource(R.string.permission_summary_format, grantedCount, specialCount),
+                    text = stringResource(R.string.permission_summary_ctb_format, grantedCount, PermissionToggle.entries.size),
                     style = MaterialTheme.typography.bodySmall,
                     color = OnboardingTextSecondary
                 )
@@ -1296,17 +1391,12 @@ private fun FinalCheckStep(
 
         if (isConnected) {
             Button(
-                onClick = finishWithHttpTest,
-                enabled = !isFinishing,
+                onClick = onFinish,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = OnboardingGradientMid)
             ) {
-                if (isFinishing) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
-                } else {
-                    Text(stringResource(R.string.setup_guide_finish), fontSize = 18.sp)
-                }
+                Text(stringResource(R.string.setup_guide_finish), fontSize = 18.sp)
             }
         } else {
             Button(

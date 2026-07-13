@@ -68,7 +68,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.service.HotwordService
-import com.openclaw.assistant.service.NodeForegroundService
 import com.openclaw.assistant.service.OpenClawAssistantService
 import com.openclaw.assistant.ui.GatewayTrustDialog
 import com.openclaw.assistant.speech.TTSUtils
@@ -115,8 +114,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var pendingHotwordStart = false
     private var chatRefreshTrigger by mutableStateOf(0)
 
-    private lateinit var screenCaptureRequester: ScreenCaptureRequester
-    private lateinit var permissionRequester: PermissionRequester
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -188,14 +185,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         handleIntent(intent)
         settings = SettingsRepository.getInstance(this)
         
-        screenCaptureRequester = ScreenCaptureRequester(this)
-        permissionRequester = PermissionRequester(this)
-        
-        val runtime = (applicationContext as OpenClawApplication).nodeRuntime
-        runtime.screenRecorder.attachScreenCaptureRequester(screenCaptureRequester)
-        runtime.screenRecorder.attachPermissionRequester(permissionRequester)
-        runtime.attachPermissionRequester(permissionRequester)
-        
+        // Screen-capture and device-permission requesters are not wired in
+        // the CTB build: the capabilities they served are disabled
+        // (Spec 001 §C / CTB_RESTRICTED).
         initializeTTS()
         // Removed checkPermissions() from onCreate to allow SetupGuideScreen to handle it
         refreshMissingPermissions()
@@ -408,7 +400,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     override fun onResume() {
         super.onResume()
-        (applicationContext as OpenClawApplication).nodeRuntime.screenRecorder.attachScreenCaptureRequester(screenCaptureRequester)
         chatRefreshTrigger++
         refreshMissingPermissions()
         refreshAllPermissionsStatus()
@@ -619,12 +610,7 @@ fun MainScreen(
     val nodeStatusText by runtime.statusText.collectAsState()
     var showTroubleshooting by rememberSaveable { mutableStateOf(false) }
     var showHowToUse by rememberSaveable { mutableStateOf(false) }
-    var showLocationInfo by rememberSaveable { mutableStateOf(false) }
-    
-    var showScreenCaptureDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
-    val smsEnabled by runtime.smsEnabled.collectAsState()
-    val screenRecordActive by runtime.screenRecordActive.collectAsState()
     val lastCapabilityError by runtime.lastCapabilityError.collectAsState()
     LaunchedEffect(lastCapabilityError) {
         val err = lastCapabilityError ?: return@LaunchedEffect
@@ -845,45 +831,8 @@ fun MainScreen(
         }
     }
 
-    if (showScreenCaptureDialog) {
-        AlertDialog(
-            onDismissRequest = { showScreenCaptureDialog = false },
-            title = { Text(stringResource(R.string.screen_capture_title)) },
-            text = { Text(stringResource(R.string.screen_capture_message)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showScreenCaptureDialog = false
-                    if (screenRecordActive) {
-                        runtime.setScreenRecordActive(false)
-                    } else {
-                        runtime.setScreenRecordActive(true)
-                    }
-                }) {
-                    Text(stringResource(if (screenRecordActive) R.string.stop else R.string.start))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showScreenCaptureDialog = false }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            }
-        )
-    }
-
     if (showTroubleshooting) TroubleshootingDialog(onDismiss = { showTroubleshooting = false })
     if (showHowToUse) HowToUseDialog(displayWakeWord = displayWakeWord, onDismiss = { showHowToUse = false })
-    if (showLocationInfo) {
-        AlertDialog(
-            onDismissRequest = { showLocationInfo = false },
-            title = { Text(stringResource(R.string.location_info_title)) },
-            text = { Text(stringResource(R.string.location_info_message)) },
-            confirmButton = {
-                TextButton(onClick = { showLocationInfo = false }) {
-                    Text(stringResource(R.string.got_it))
-                }
-            }
-        )
-    }
 }
 
 @Composable

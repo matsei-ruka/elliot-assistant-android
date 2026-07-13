@@ -40,9 +40,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.openclaw.assistant.R
 import com.openclaw.assistant.OpenClawApplication
-import com.openclaw.assistant.backend.VoiceBackendSelector
+import com.openclaw.assistant.backend.BackendType
+import com.openclaw.assistant.backend.VoiceSessionRouter
 import com.openclaw.assistant.data.SettingsRepository
-import com.openclaw.assistant.api.OpenClawClient
 import com.openclaw.assistant.speech.SpeechRecognizerManager
 import com.openclaw.assistant.speech.TTSManager
 import com.openclaw.assistant.speech.TTSState
@@ -80,7 +80,6 @@ class OpenClawSession(
 
     private val settings = SettingsRepository.getInstance(context)
     private var sessionArgs: Bundle? = initialSessionArgs
-    private val apiClient = OpenClawClient()
     private lateinit var speechManager: SpeechRecognizerManager
     private lateinit var ttsManager: TTSManager
     
@@ -95,8 +94,11 @@ class OpenClawSession(
     private val interruptReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != "com.openclaw.assistant.ACTION_INTERRUPT_TTS") return
+            // THINKING included so barge-in can also cancel the request
+            // during the full 320-second CTB wait.
             if (currentState.value != AssistantState.SPEAKING &&
-                currentState.value != AssistantState.PREPARING_SPEECH) return
+                currentState.value != AssistantState.PREPARING_SPEECH &&
+                currentState.value != AssistantState.THINKING) return
             Log.d(TAG, "Barge-in interrupt received in OpenClawSession")
             interruptAndListen()
         }
@@ -120,9 +122,15 @@ class OpenClawSession(
             }
     }
 
-    private fun isOpenClawVoiceTarget(): Boolean {
-        return effectiveVoiceTarget() == SettingsRepository.VOICE_TARGET_OPENCLAW
-    }
+    /**
+     * Backend route resolved exactly once in [onShow]; the same route is used
+     * for every request of this session. Only a GATEWAY route touches gateway
+     * health or gateway session management.
+     */
+    private var resolvedRoute: VoiceSessionRouter.Route.Backend? = null
+
+    private fun isGatewayRoute(): Boolean =
+        resolvedRoute?.type == BackendType.OPENCLAW_GATEWAY
 
     // WakeLock to keep CPU alive during voice conversation when screen is off
     private var wakeLock: PowerManager.WakeLock? = null
@@ -252,11 +260,34 @@ class OpenClawSession(
 
         // PAUSE Hotword Service to prevent microphone conflict
         sendPauseBroadcast()
-        
+
+        // Resolve the backend route exactly once for this session. The
+        // gateway is consulted only when the route is actually a gateway;
+        // an HTTP (CTB) or Hermes route never requires gateway health,
+        // gateway session management, or gateway configuration.
+        val nodeRuntime = (context.applicationContext as OpenClawApplication).nodeRuntime
+        val route = VoiceSessionRouter.resolve(
+            voiceTarget = effectiveVoiceTarget(),
+            backends = com.openclaw.assistant.backend.BackendRepository.getInstance(context).backends.value,
+            gatewayHealthy = nodeRuntime.chatHealthOk.value,
+        )
+        when (route) {
+            is VoiceSessionRouter.Route.Backend -> resolvedRoute = route
+            VoiceSessionRouter.Route.GatewayUnavailable -> {
+                resolvedRoute = null
+                showTerminalConfigError(context.getString(R.string.error_gateway_not_connected))
+                return
+            }
+            VoiceSessionRouter.Route.NotConfigured -> {
+                resolvedRoute = null
+                showTerminalConfigError(context.getString(R.string.error_config_required))
+                return
+            }
+        }
+
         // SESSION MANAGEMENT
-        if (isOpenClawVoiceTarget()) {
-            // Gateway mode: manage session on the gateway side, not in local DB
-            val nodeRuntime = (context.applicationContext as OpenClawApplication).nodeRuntime
+        if (isGatewayRoute()) {
+            // Gateway route: manage session on the gateway side, not in local DB
             if (!settings.resumeLatestSession) {
                 // Start a fresh gateway session with a human-readable label
                 val newKey = java.util.UUID.randomUUID().toString()
@@ -285,28 +316,21 @@ class OpenClawSession(
                 }
             }
         }
-        
-        // Check settings
-        if (!settings.isConfigured()) {
-            currentState.value = AssistantState.ERROR
-            errorMessage.value = context.getString(R.string.error_config_required)
-            displayText.value = context.getString(R.string.config_required)
-            return
-        }
-
-        // For Gateway mode, fail fast if the gateway is not healthy
-        if (isOpenClawVoiceTarget()) {
-            val nodeRuntime = (context.applicationContext as OpenClawApplication).nodeRuntime
-            if (!nodeRuntime.chatHealthOk.value) {
-                currentState.value = AssistantState.ERROR
-                errorMessage.value = context.getString(R.string.error_gateway_not_connected)
-                displayText.value = context.getString(R.string.config_required)
-                return
-            }
-        }
 
         // Start speech recognition
         startListening()
+    }
+
+    /**
+     * Terminal configuration error: the overlay stays up showing the error,
+     * but no foreground service, wake lock, or audio focus may remain active
+     * (Spec 001 §D).
+     */
+    private fun showTerminalConfigError(message: String) {
+        currentState.value = AssistantState.ERROR
+        errorMessage.value = message
+        displayText.value = context.getString(R.string.config_required)
+        releaseSessionResources()
     }
     
     override fun onHide() {
@@ -338,46 +362,65 @@ class OpenClawSession(
         cleanupSession()
     }
 
-    private fun cleanupSession() {
-        lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_PAUSE)
-        lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_STOP)
-
-        // Clean up audio resources
+    /**
+     * Single terminal cleanup used by every non-continuous end of a request —
+     * success, error, empty reply, TTS failure, or configuration error
+     * (Spec 001 §D). Cancels all auxiliary sounds, releases audio focus and
+     * the session wake lock, stops the foreground service and resumes the
+     * hotword service. Not used during barge-in, where the session goes
+     * straight back to listening and must keep its foreground service.
+     */
+    private fun releaseSessionResources(resumeHotword: Boolean = true) {
         cancelInitialFillerPhrase()
         cancelWaitPhraseTimer()
         stopThinkingSound()
         stopAuxiliarySpeech()
         abandonAudioFocus()
+        releaseWakeLock()
         SessionForegroundService.stop(context)
+        if (resumeHotword) sendResumeBroadcast()
+    }
+
+    /**
+     * Cancels the in-flight assistant request. Cancellation synchronously
+     * aborts the underlying OkHttp call (the client registers
+     * invokeOnCancellation → Call.cancel()); the coroutine itself finishes on
+     * the main dispatcher, where the ensureActive() guard prevents any late
+     * work. The slot is cleared only if it still holds this job.
+     */
+    private fun cancelSendJob(): Job? {
+        val job = sendJob ?: return null
+        job.cancel()
+        if (sendJob === job) sendJob = null
+        return job
+    }
+
+    private fun cleanupSession() {
+        lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_PAUSE)
+        lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_STOP)
+
+        // Abort the in-flight HTTP request before tearing anything down.
+        cancelSendJob()
+        releaseSessionResources()
         scope.cancel()
         speechManager.destroy()
         ttsManager.stop()
-        releaseWakeLock()
-
-        // Resume Hotword
-        sendResumeBroadcast()
     }
-    
+
     override fun onDestroy() {
         super.onDestroy()
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_DESTROY)
-        cancelInitialFillerPhrase()
-        cancelWaitPhraseTimer()
-        stopThinkingSound()
-        stopAuxiliarySpeech()
-        
-        // Resume Hotword (safety)
-        sendResumeBroadcast()
+        cancelSendJob()
+        releaseSessionResources()
+        scope.cancel()
         try {
             context.unregisterReceiver(interruptReceiver)
         } catch (_: Exception) {
         }
 
-        SessionForegroundService.stop(context)
         ttsManager.shutdown()
         toneGeneratorReleased.set(true)
         toneGenerator.release()
-        releaseWakeLock()
     }
 
     private fun sendPauseBroadcast() {
@@ -403,6 +446,9 @@ class OpenClawSession(
     private fun startListening(initialDelayMs: Long = 50L) {
         Log.d(TAG, "startListening() called, currentState=${currentState.value}, listeningJob=${listeningJob}, speakingJob=${speakingJob}")
         listeningJob?.cancel()
+        // Re-arm the session resources: a retry after a terminal error must
+        // restore the foreground service and wake lock it released.
+        SessionForegroundService.start(context)
         acquireWakeLock()
         sendPauseBroadcast()
 
@@ -553,15 +599,12 @@ class OpenClawSession(
     }
 
     /**
-     * Common failure path for the assistant request: stops the thinking and
-     * filler sounds and releases audio focus so no resource outlives the
-     * error (Spec 001 §D).
+     * Common failure path for the assistant request. Terminal: every session
+     * resource (sounds, audio focus, wake lock, foreground service) is
+     * released; the overlay stays up showing the error (Spec 001 §D).
      */
     private fun failRequest(message: String?) {
-        cancelInitialFillerPhrase()
-        cancelWaitPhraseTimer()
-        stopThinkingSound()
-        abandonAudioFocus()
+        releaseSessionResources()
         currentState.value = AssistantState.ERROR
         errorMessage.value = message ?: context.getString(R.string.error_network)
     }
@@ -578,71 +621,63 @@ class OpenClawSession(
             scheduleInitialFillerPhrase()
         }
 
-        // Only one assistant request may be in flight (Spec 001 §D).
-        sendJob?.cancel()
-        sendJob = scope.launch {
+        // The route was resolved once in onShow(); it is never re-resolved
+        // during a request.
+        val route = resolvedRoute
+        if (route == null) {
+            failRequest(context.getString(R.string.error_config_required))
+            return
+        }
+
+        // Only one assistant request may be in flight (Spec 001 §D): the new
+        // job first cancels the previous one and waits for it to fully
+        // finish, so two requests can never overlap.
+        val previous = cancelSendJob()
+        val job = scope.launch {
+            previous?.join()
             val agentId = settings.defaultAgentId.takeIf { it.isNotBlank() && it != "main" }
-            val voiceBackendId = resolveVoiceSessionBackendId()
-            if (!isOpenClawVoiceTarget() && voiceBackendId == null) {
-                failRequest(context.getString(R.string.av_settings_no_hermes))
+
+            // Save the user message to the local DB for non-gateway routes
+            if (route.type != BackendType.OPENCLAW_GATEWAY) {
+                currentSessionId?.let { sessionId ->
+                    chatRepository.addMessage(sessionId, message, isUser = true)
+                }
+            }
+
+            if (route.type == BackendType.OPENCLAW_GATEWAY) {
+                sendViaGateway(message)
                 return@launch
             }
-            val primaryReply = try {
-                if (voiceBackendId != null) {
-                    com.openclaw.assistant.backend.PrimaryBackendDispatcher.send(
-                        context = context,
-                        userText = message,
-                        backendId = voiceBackendId,
-                        sessionId = settings.installUserId,
-                        agentId = agentId,
-                    )
-                } else {
-                    null
-                }
+
+            startWaitPhraseTimer()
+            val reply = try {
+                com.openclaw.assistant.backend.PrimaryBackendDispatcher.send(
+                    context = context,
+                    userText = message,
+                    backendId = route.id,
+                    sessionId = settings.installUserId,
+                    agentId = agentId,
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 failRequest(e.message)
                 return@launch
             }
-            if (primaryReply != null) {
-                val text = primaryReply.text
-                if (text.isNotBlank()) {
-                    displayText.value = text
-                    handleResponseReceived(text)
-                } else {
-                    failRequest(context.getString(R.string.error_no_response))
-                }
-                return@launch
-            }
+            cancelWaitPhraseTimer()
 
-            if (!isOpenClawVoiceTarget()) {
-                failRequest(context.getString(R.string.av_settings_no_hermes))
-                return@launch
-            }
-
-            // Save user message to local DB only for HTTP mode
-            if (!isOpenClawVoiceTarget()) {
-                currentSessionId?.let { sessionId ->
-                    chatRepository.addMessage(sessionId, message, isUser = true)
-                }
-            }
-
-            if (isOpenClawVoiceTarget()) {
-                sendViaGateway(message)
+            val text = reply?.text.orEmpty()
+            if (text.isNotBlank()) {
+                displayText.value = text
+                handleResponseReceived(text)
             } else {
-                sendViaHttp(message)
+                failRequest(context.getString(R.string.error_no_response))
             }
         }
-    }
-
-    private suspend fun resolveVoiceSessionBackendId(): String? {
-        val backends = com.openclaw.assistant.backend.BackendRepository.getInstance(context).backends.first()
-        return VoiceBackendSelector.selectBackendId(
-            voiceTarget = effectiveVoiceTarget(),
-            backends = backends,
-            gatewayHealthy = (context.applicationContext as OpenClawApplication).nodeRuntime.chatHealthOk.value,
-        )
+        sendJob = job
+        job.invokeOnCompletion {
+            if (sendJob === job) sendJob = null
+        }
     }
 
     private suspend fun resolveOpenClawGatewayModel(): String? {
@@ -653,17 +688,6 @@ class OpenClawSession(
         }?.modelName?.takeIf { it.isNotBlank() }
             ?: backends.firstOrNull {
                 it.type == com.openclaw.assistant.backend.BackendType.OPENCLAW_GATEWAY
-            }?.modelName?.takeIf { it.isNotBlank() }
-    }
-
-    private suspend fun resolveLegacyOpenClawModel(): String? {
-        val backends = com.openclaw.assistant.backend.BackendRepository.getInstance(context).backends.first()
-            .filter { it.enabled }
-        return backends.firstOrNull {
-            it.isPrimary && it.type == com.openclaw.assistant.backend.BackendType.OPENCLAW_HTTP
-        }?.modelName?.takeIf { it.isNotBlank() }
-            ?: backends.firstOrNull {
-                it.type == com.openclaw.assistant.backend.BackendType.OPENCLAW_HTTP
             }?.modelName?.takeIf { it.isNotBlank() }
     }
 
@@ -789,73 +813,10 @@ class OpenClawSession(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Gateway error", e)
+            // Class name only: exception messages can embed host details.
+            Log.w(TAG, "Gateway error: ${e.javaClass.simpleName}")
             failRequest(e.message)
         }
-    }
-
-    private suspend fun sendViaHttp(message: String) {
-        val agentId = settings.defaultAgentId.takeIf { it.isNotBlank() && it != "main" }
-
-        startWaitPhraseTimer()
-
-        // Route through the configured Primary backend first. Older installs
-        // without migrated backend records fall through to the legacy HTTP path.
-        val primaryReply = try {
-            com.openclaw.assistant.backend.PrimaryBackendDispatcher.sendPrimary(
-                context = context,
-                userText = message,
-                sessionId = settings.installUserId,
-                agentId = agentId,
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            failRequest(e.message)
-            return
-        }
-        if (primaryReply != null) {
-            cancelWaitPhraseTimer()
-            val text = primaryReply.text
-            if (text.isNotBlank()) {
-                displayText.value = text
-                handleResponseReceived(text)
-            } else {
-                failRequest(context.getString(R.string.error_no_response))
-            }
-            return
-        }
-
-        // The configured endpoint is used as-is; OpenClawClient rejects
-        // anything that is not a valid CTB completion URL (Spec 001 §B.5).
-        val result = apiClient.sendMessage(
-            httpUrl = settings.httpUrl,
-            message = message,
-            sessionId = settings.installUserId,
-            authToken = settings.authToken.takeIf { it.isNotBlank() },
-            agentId = agentId,
-            modelName = resolveLegacyOpenClawModel(),
-        )
-
-        cancelWaitPhraseTimer()
-
-        result.fold(
-            onSuccess = { response ->
-                val responseText = response.getResponseText()
-                if (responseText != null) {
-                    displayText.value = responseText
-                    handleResponseReceived(responseText)
-                } else if (response.error != null) {
-                    failRequest(response.error)
-                } else {
-                    failRequest(context.getString(R.string.error_no_response))
-                }
-            },
-            onFailure = { error ->
-                Log.e(TAG, "API error", error)
-                failRequest(error.message)
-            }
-        )
     }
 
     private suspend fun handleResponseReceived(responseText: String) {
@@ -868,8 +829,8 @@ class OpenClawSession(
         cancelWaitPhraseTimer()
         stopAuxiliarySpeech()
 
-        // Save AI response to local DB only for HTTP mode
-        if (!isOpenClawVoiceTarget()) {
+        // Save the AI response to the local DB for non-gateway routes
+        if (!isGatewayRoute()) {
             currentSessionId?.let { sessionId ->
                 chatRepository.addMessage(sessionId, responseText, isUser = false)
             }
@@ -883,14 +844,15 @@ class OpenClawSession(
             delay(500)
             startListening()
         } else {
-            stopThinkingSound()
-            // TTS disabled & continuous conversation OFF: Return to IDLE
+            // TTS disabled & continuous conversation OFF: terminal success
+            releaseSessionResources()
             currentState.value = AssistantState.IDLE
-            SessionForegroundService.stop(context)
         }
     }
 
     private fun interruptAndListen() {
+        // Barge-in: the session goes straight back to listening, so the
+        // foreground service and wake lock are deliberately kept alive here.
         cancelInitialFillerPhrase()
         cancelWaitPhraseTimer()
         stopThinkingSound()
@@ -898,8 +860,7 @@ class OpenClawSession(
         listeningJob?.cancel()
         // Abort the in-flight HTTP request so a late reply is never spoken
         // and the OkHttp call is really cancelled (Spec 001 §B.2/§D).
-        sendJob?.cancel()
-        sendJob = null
+        val cancelledSend = cancelSendJob()
         sendPauseBroadcast()
         ignoreNextTtsStop = true
         ttsManager.stop()
@@ -911,6 +872,9 @@ class OpenClawSession(
         partialText.value = ""
         errorMessage.value = null
         scope.launch {
+            // The cancelled request must have fully finished before the next
+            // listening turn can produce a new one.
+            cancelledSend?.join()
             delay(INTERRUPT_LISTEN_DELAY_MS)
             startListening()
         }
@@ -987,14 +951,12 @@ class OpenClawSession(
                         delay(500)
                         startListening()
                     } else {
-                        // If continuous conversation is OFF, end the session
+                        // Continuous conversation OFF: terminal success
+                        releaseSessionResources()
                         currentState.value = AssistantState.IDLE
-                        releaseWakeLock()
-                        SessionForegroundService.stop(context)
                     }
                 } else {
-                    currentState.value = AssistantState.ERROR
-                    errorMessage.value = context.getString(R.string.error_speech_general)
+                    failRequest(context.getString(R.string.error_speech_general))
                 }
             } catch (e: CancellationException) {
                 if (!ignoreNextTtsStop) {
@@ -1004,11 +966,8 @@ class OpenClawSession(
                 if (ignoreNextTtsStop) {
                     return@launch
                 }
-                Log.e(TAG, "TTS speak error", e)
-                abandonAudioFocus()
-                releaseWakeLock()
-                currentState.value = AssistantState.ERROR
-                errorMessage.value = context.getString(R.string.error_speech_general)
+                Log.e(TAG, "TTS speak error: ${e.javaClass.simpleName}")
+                failRequest(context.getString(R.string.error_speech_general))
             }
         }
     }
